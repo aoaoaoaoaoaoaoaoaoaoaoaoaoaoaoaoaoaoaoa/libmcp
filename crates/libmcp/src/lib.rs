@@ -31,8 +31,8 @@ pub use normalize::{
     parse_human_unsigned_u64, saturating_u64_to_usize,
 };
 pub use render::{
-    JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,
-    collapse_inline_whitespace, render_json_porcelain,
+    DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,
+    collapse_inline_whitespace, render_json_porcelain, with_presentation_properties,
 };
 pub use replay::ReplayContract;
 pub use telemetry::{TelemetryLog, ToolErrorDetail, ToolOutcome};

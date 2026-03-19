@@ -33,6 +33,7 @@ Default posture:
 - make replay legality explicit per request surface
 - ship health, telemetry, and recovery tests before feature sprawl
 - default nontrivial tool output to porcelain
+- treat `render` and `detail` as orthogonal controls
 - keep structured JSON output available where exact consumers need it
 
 ## Retrofit
@@ -47,6 +48,7 @@ Retrofit in order:
 - separate durable transport ownership from fragile execution
 - define typed faults and replay contracts before adding retries
 - adopt the model UX doctrine, especially porcelain-by-default output
+- make `detail=concise|full` real before inventing consumer-local verbosity knobs
 - add rollout, telemetry, and recovery tests before claiming stability
 
 ## Guardrails

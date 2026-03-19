@@ -18,6 +18,19 @@ pub enum RenderMode {
     Json,
 }
 
+/// Output detail level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DetailLevel {
+    /// Model-optimized concise output.
+    #[default]
+    #[serde(alias = "summary", alias = "compact")]
+    Concise,
+    /// Verbose output that retains additional structure and fields.
+    #[serde(alias = "verbose", alias = "detailed")]
+    Full,
+}
+
 /// Path rendering style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +48,8 @@ pub enum PathStyle {
 pub struct RenderConfig {
     /// Chosen render mode.
     pub render: RenderMode,
+    /// Chosen detail level.
+    pub detail: DetailLevel,
     /// Chosen path rendering style.
     pub path_style: PathStyle,
 }
@@ -43,7 +58,11 @@ impl RenderConfig {
     /// Builds a render configuration from user input, applying the default
     /// path style implied by the render mode.
     #[must_use]
-    pub fn from_user_input(render: Option<RenderMode>, path_style: Option<PathStyle>) -> Self {
+    pub fn from_user_input(
+        render: Option<RenderMode>,
+        path_style: Option<PathStyle>,
+        detail: Option<DetailLevel>,
+    ) -> Self {
         let render = render.unwrap_or(RenderMode::Porcelain);
         let default_path_style = match render {
             RenderMode::Porcelain => PathStyle::Relative,
@@ -51,6 +70,7 @@ impl RenderConfig {
         };
         Self {
             render,
+            detail: detail.unwrap_or(DetailLevel::Concise),
             path_style: path_style.unwrap_or(default_path_style),
         }
     }
@@ -109,6 +129,41 @@ pub fn render_path(path: &Path, style: PathStyle, workspace_root: Option<&Path>)
             path.display().to_string()
         }
     }
+}
+
+/// Injects the common presentation controls into an object input schema.
+#[must_use]
+pub fn with_presentation_properties(schema: Value) -> Value {
+    let Value::Object(mut object) = schema else {
+        return schema;
+    };
+    let properties = object
+        .entry("properties".to_owned())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Value::Object(properties) = properties {
+        let _ = properties.insert("render".to_owned(), render_property_schema());
+        let _ = properties.insert("detail".to_owned(), detail_property_schema());
+    }
+    let _ = object
+        .entry("additionalProperties".to_owned())
+        .or_insert(Value::Bool(false));
+    Value::Object(object)
+}
+
+fn render_property_schema() -> Value {
+    serde_json::json!({
+        "type": "string",
+        "enum": ["porcelain", "json"],
+        "description": "Output rendering. Defaults to porcelain for model-friendly summaries."
+    })
+}
+
+fn detail_property_schema() -> Value {
+    serde_json::json!({
+        "type": "string",
+        "enum": ["concise", "full"],
+        "description": "Output detail level. Concise is the default model-facing summary; full retains more structure."
+    })
 }
 
 /// Generic JSON-to-porcelain rendering configuration.
@@ -225,19 +280,21 @@ fn quote_string(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, collapse_inline_whitespace,
-        render_json_porcelain, render_path,
+        DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode,
+        collapse_inline_whitespace, render_json_porcelain, render_path,
+        with_presentation_properties,
     };
     use serde_json::json;
     use std::path::Path;
 
     #[test]
     fn render_config_uses_mode_specific_defaults() {
-        let porcelain = RenderConfig::from_user_input(None, None);
+        let porcelain = RenderConfig::from_user_input(None, None, None);
         assert_eq!(porcelain.render, RenderMode::Porcelain);
+        assert_eq!(porcelain.detail, DetailLevel::Concise);
         assert_eq!(porcelain.path_style, PathStyle::Relative);
 
-        let json = RenderConfig::from_user_input(Some(RenderMode::Json), None);
+        let json = RenderConfig::from_user_input(Some(RenderMode::Json), None, None);
         assert_eq!(json.path_style, PathStyle::Absolute);
     }
 
@@ -273,5 +330,24 @@ mod tests {
             rendered,
             "2 item(s)\n[1] {id=1, title=\"first\"}\n[2] {id=2, title=\"second\"}"
         );
+    }
+
+    #[test]
+    fn injects_render_and_detail_schema_properties() {
+        let schema = with_presentation_properties(json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            }
+        }));
+        assert_eq!(
+            schema["properties"]["render"]["enum"],
+            json!(["porcelain", "json"])
+        );
+        assert_eq!(
+            schema["properties"]["detail"]["enum"],
+            json!(["concise", "full"])
+        );
+        assert_eq!(schema["additionalProperties"], json!(false));
     }
 }

@@ -163,6 +163,11 @@ Nontrivial tools should default to `render=porcelain`.
 Structured `render=json` must remain available, but it is opt-in unless a tool
 is intrinsically structured and tiny.
 
+`render` and detail are orthogonal concerns.
+
+- `render=porcelain|json` selects text versus structured output.
+- `detail=concise|full` selects summary versus expanded output.
+
 Porcelain output should be:
 
 - line-oriented
@@ -174,6 +179,7 @@ Porcelain output should be:
 The library should therefore provide reusable primitives for:
 
 - render mode selection
+- detail selection
 - bounded/truncated text shaping
 - stable note emission
 - path rendering
@@ -181,9 +187,16 @@ The library should therefore provide reusable primitives for:
 - generic JSON-to-porcelain projection for consumers that have not yet earned
   bespoke renderers
 
-`libmcp` does not require a universal detail taxonomy like
-`summary|compact|full`. Consumers may add extra detail controls when their tool
+`libmcp` standardizes only the minimal shared detail axis
+`concise|full`. Consumers may add richer local taxonomies when their tool
 surface actually needs them.
+
+When a tool supports both detail levels:
+
+- `porcelain + concise` should be the hot-path default
+- `json + concise` should return a structured summary rather than the full
+  backing object
+- `json + full` should remain the authoritative structured payload
 
 ### Normalization
 

@@ -46,6 +46,11 @@ Faults should flow through health, telemetry, and user-facing shaping.
 
 Nontrivial tools should default to `render=porcelain`.
 
+`render` and detail are separate axes.
+
+- `render=porcelain|json`
+- `detail=concise|full`
+
 Porcelain should be:
 
 - line-oriented
@@ -54,6 +59,9 @@ Porcelain should be:
 - summary-first
 
 Structured `render=json` should remain available.
+
+`json + concise` should be a structured summary, not merely the full payload in
+different clothes.
 
 Use library rendering helpers where possible. Do not default to pretty-printed
 JSON dumps and call that porcelain.

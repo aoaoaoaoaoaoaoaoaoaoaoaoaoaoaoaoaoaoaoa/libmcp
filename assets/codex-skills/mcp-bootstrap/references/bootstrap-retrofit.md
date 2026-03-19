@@ -8,6 +8,7 @@ scratch.
 1. Separate session ownership from fragile execution.
 2. Define typed replay contracts and typed faults.
 3. Replace ad hoc backend dumps with porcelain-by-default output.
+   Make `render` and `detail` orthogonal before you start bikeshedding prose.
 4. Add health, telemetry, and recovery tests.
 5. Only then promise hot rollout or stronger operational guarantees.
 
