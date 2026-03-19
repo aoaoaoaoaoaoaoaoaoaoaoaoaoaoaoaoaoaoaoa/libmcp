@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.0
+
+Additive release on top of the locked `1.0.0` foundation.
+
+Included in `1.1.0`:
+
+- reusable host-session kernel for initialize seed capture, pending request
+  journaling, replay budgeting, and queue rebuild
+- snapshot-file helpers for host self-reexec handoff
+- generic JSON-to-porcelain rendering for doctrine-compliant default output
+- retrofit of `adequate_rust_mcp` onto the shared host-session kernel
+- first `fidget_spinner` retrofit onto the shared kernel and render doctrine
+
+Still intentionally excluded:
+
+- final runtime adapter crates
+- a forced single worker transport shape
+- the deeper client/server infra lift reserved for a later release
+
 ## 1.0.0
 
 Initial stable release.

@@ -2,6 +2,7 @@
 
 pub mod fault;
 pub mod health;
+pub mod host;
 pub mod jsonrpc;
 pub mod normalize;
 pub mod render;
@@ -14,6 +15,13 @@ pub use health::{
     HealthSnapshot, LifecycleState, MethodTelemetry, RolloutState, TelemetrySnapshot,
     TelemetryTotals,
 };
+pub use host::{
+    CompletedPendingRequest, HostRejection, HostSessionKernel, HostSessionKernelSnapshot,
+    InitializationSeed, PendingRequest, RejectedReplay, ReplayBudget, ReplayRequeueOutcome,
+    RestoredHostSessionKernel, SeededInitializeRequest, SessionPhase, load_snapshot_file_from_env,
+    prepare_replay_seed, remove_snapshot_file, snapshot_temp_path,
+    synthesized_initialized_notification, write_snapshot_file,
+};
 pub use jsonrpc::{
     FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind, ToolCallMeta,
     parse_tool_call_meta, read_frame, write_frame,
@@ -22,7 +30,10 @@ pub use normalize::{
     NumericParseError, PathNormalizeError, normalize_ascii_token, normalize_local_path,
     parse_human_unsigned_u64, saturating_u64_to_usize,
 };
-pub use render::{PathStyle, RenderConfig, RenderMode, TruncatedText, collapse_inline_whitespace};
+pub use render::{
+    JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,
+    collapse_inline_whitespace, render_json_porcelain,
+};
 pub use replay::ReplayContract;
 pub use telemetry::{TelemetryLog, ToolErrorDetail, ToolOutcome};
 pub use types::{Generation, InvariantViolation};

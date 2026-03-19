@@ -2,7 +2,8 @@
 
 ## Status
 
-This document is the normative specification for `libmcp` `1.0.0`.
+This document is the normative specification for `libmcp`
+`1.1.0`.
 
 `libmcp` is the reusable operational spine for hardened MCP servers. It is not
 an application framework, a domain schema repository, or a mandate that every
@@ -29,6 +30,8 @@ This library exists to make that posture reusable and versioned.
 - replay contract vocabulary
 - typed fault taxonomy
 - request identity and JSON-RPC frame helpers
+- durable public-session kernel primitives
+- host self-reexec snapshot file handoff
 - health and telemetry base schemas
 - JSONL telemetry support
 - model UX doctrine primitives
@@ -43,6 +46,24 @@ This library exists to make that posture reusable and versioned.
 - backend-specific warm-up heuristics
 - a mandatory public transport shape
 - an obligation that every tool batch or support preview modes
+
+## Durable Host Session Kernel
+
+The library owns a reusable public-session kernel for hardened hosts.
+
+That kernel must support:
+
+- initialize and initialized seed capture
+- pending public request journaling
+- replay-attempt accounting
+- queued-frame surgery after worker failure
+- serialized snapshot and restore for host self-reexec
+
+This kernel is transport-adjacent, not transport-prescriptive.
+
+- It is shared across public MCP hosts.
+- It does not force one worker bridge shape.
+- Consumers may still keep worker transport logic local.
 
 ## Supported Topologies
 
@@ -157,6 +178,8 @@ The library should therefore provide reusable primitives for:
 - stable note emission
 - path rendering
 - common porcelain patterns
+- generic JSON-to-porcelain projection for consumers that have not yet earned
+  bespoke renderers
 
 `libmcp` does not require a universal detail taxonomy like
 `summary|compact|full`. Consumers may add extra detail controls when their tool
@@ -218,7 +241,16 @@ The `1.0.0` contract means:
 - the model UX doctrine is embodied in helpers and tests, not just prose
 - the core contracts are stable enough to be depended on directly
 
-`fidget_spinner` is explicitly out of scope for `1.0.0`.
+`libmcp` `1.1.0` adds:
+
+- reusable host-session kernel extraction from `adequate_rust_mcp`
+- generic snapshot-file handoff for host self-reexec
+- generic JSON-to-porcelain rendering support
+- first retrofit of `fidget_spinner` onto the shared kernel and render doctrine
+
+`1.1.0` does not claim the final runtime-adapter release.
+The deeper client/server infra lift and any runtime adapter crates remain
+future work.
 
 ## Immediate Implementation Sequence
 

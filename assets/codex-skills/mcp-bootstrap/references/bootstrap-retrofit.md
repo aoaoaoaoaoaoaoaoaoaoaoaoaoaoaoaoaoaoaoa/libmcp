@@ -11,6 +11,9 @@ scratch.
 4. Add health, telemetry, and recovery tests.
 5. Only then promise hot rollout or stronger operational guarantees.
 
+When `libmcp` is in play, prefer its host-session kernel and render helpers over
+consumer-local copies.
+
 ## Specific Warnings
 
 - Do not add retries before replay legality is explicit.

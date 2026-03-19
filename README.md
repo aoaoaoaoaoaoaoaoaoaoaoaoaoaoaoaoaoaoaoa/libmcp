@@ -7,6 +7,7 @@ servers. It owns:
 
 - typed replay and fault contracts
 - JSON-RPC frame and request identity helpers
+- durable host-session kernel and snapshot-file handoff
 - model-facing rendering doctrine, especially porcelain-by-default output
 - normalization utilities for model input friction
 - standard health and telemetry payloads
@@ -19,11 +20,12 @@ version tracks the library version and doctrine.
 
 ## Status
 
-`libmcp` `1.0.0` is locked against a clean integration with
-`adequate_rust_mcp`.
+`libmcp` `1.1.0` builds on the locked `1.0.0` base with a reusable
+host-session kernel, snapshot-file reexec handoff, a generic JSON-to-porcelain
+renderer, and a first `fidget_spinner` retrofit.
 
-`fidget_spinner` is intentionally not part of `1.0.0`; it will be revisited
-later once its transport shape is settled.
+The eventual runtime-adapter and deeper client/server lift remain future work;
+this release does not pretend that phase is complete.
 
 ## Layout
 

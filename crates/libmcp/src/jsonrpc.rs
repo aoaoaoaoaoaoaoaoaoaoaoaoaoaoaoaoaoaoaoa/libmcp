@@ -1,6 +1,7 @@
 //! Lightweight JSON-RPC frame helpers.
 
 use crate::normalize::normalize_ascii_token;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io;
@@ -8,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use url::Url;
 
 /// JSON-RPC request identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum RequestId {
     /// Numeric identifier preserved as text for round-trip stability.
     Number(String),

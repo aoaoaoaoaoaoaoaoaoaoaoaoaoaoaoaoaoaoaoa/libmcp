@@ -11,6 +11,8 @@ execution.
   policy, rollout, and user-facing error shaping.
 - The worker owns backend runtimes, backend-specific retries, and tool
   execution.
+- Use `libmcp`'s host-session kernel and snapshot-file handoff instead of
+  rolling custom initialize seed and reexec glue.
 
 If the worker dies, the session should survive.
 
@@ -52,6 +54,9 @@ Porcelain should be:
 - summary-first
 
 Structured `render=json` should remain available.
+
+Use library rendering helpers where possible. Do not default to pretty-printed
+JSON dumps and call that porcelain.
 
 ## 5. Boundary normalization
 

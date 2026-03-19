@@ -2,6 +2,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::Path;
 
 /// Output render mode.
@@ -110,9 +111,124 @@ pub fn render_path(path: &Path, style: PathStyle, workspace_root: Option<&Path>)
     }
 }
 
+/// Generic JSON-to-porcelain rendering configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JsonPorcelainConfig {
+    /// Maximum output lines.
+    pub max_lines: usize,
+    /// Maximum inline characters for one preview fragment.
+    pub max_inline_chars: usize,
+}
+
+impl Default for JsonPorcelainConfig {
+    fn default() -> Self {
+        Self {
+            max_lines: 24,
+            max_inline_chars: 120,
+        }
+    }
+}
+
+/// Renders arbitrary JSON into bounded, deterministic porcelain text.
+#[must_use]
+pub fn render_json_porcelain(value: &Value, config: JsonPorcelainConfig) -> String {
+    let mut lines = Vec::<String>::new();
+    render_top_level(value, config, &mut lines);
+    if lines.is_empty() {
+        return String::new();
+    }
+    if lines.len() > config.max_lines {
+        lines.truncate(config.max_lines);
+        let truncated_note = format!("... truncated to {} lines", config.max_lines);
+        if let Some(last) = lines.last_mut() {
+            *last = truncated_note;
+        }
+    }
+    lines.join("\n")
+}
+
+fn render_top_level(value: &Value, config: JsonPorcelainConfig, lines: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if object.is_empty() {
+                lines.push("empty object".to_owned());
+                return;
+            }
+            let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
+            keys.sort_unstable();
+            for key in keys {
+                let preview = inline_preview(&object[key], config);
+                lines.push(format!("{key}: {preview}"));
+            }
+        }
+        Value::Array(items) => {
+            lines.push(format!("{} item(s)", items.len()));
+            for (index, item) in items.iter().enumerate() {
+                let preview = inline_preview(item, config);
+                lines.push(format!("[{}] {preview}", index + 1));
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            lines.push(inline_preview(value, config));
+        }
+    }
+}
+
+fn inline_preview(value: &Value, config: JsonPorcelainConfig) -> String {
+    let raw = match value {
+        Value::Null => "null".to_owned(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => quote_string(text),
+        Value::Array(items) => preview_array(items, config),
+        Value::Object(object) => preview_object(object, config),
+    };
+    truncate_chars(raw.as_str(), Some(config.max_inline_chars)).text
+}
+
+fn preview_array(items: &[Value], config: JsonPorcelainConfig) -> String {
+    if items.is_empty() {
+        return "[]".to_owned();
+    }
+    let mut parts = items
+        .iter()
+        .take(3)
+        .map(|item| inline_preview(item, config))
+        .collect::<Vec<_>>();
+    if items.len() > 3 {
+        parts.push(format!("+{} more", items.len() - 3));
+    }
+    format!("[{}]", parts.join(", "))
+}
+
+fn preview_object(object: &serde_json::Map<String, Value>, config: JsonPorcelainConfig) -> String {
+    if object.is_empty() {
+        return "{}".to_owned();
+    }
+    let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
+    keys.sort_unstable();
+    let mut parts = keys
+        .into_iter()
+        .take(4)
+        .map(|key| format!("{key}={}", inline_preview(&object[key], config)))
+        .collect::<Vec<_>>();
+    if object.len() > 4 {
+        parts.push(format!("+{} more", object.len() - 4));
+    }
+    format!("{{{}}}", parts.join(", "))
+}
+
+fn quote_string(text: &str) -> String {
+    format!("\"{}\"", collapse_inline_whitespace(text))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PathStyle, RenderConfig, RenderMode, collapse_inline_whitespace, render_path};
+    use super::{
+        JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, collapse_inline_whitespace,
+        render_json_porcelain, render_path,
+    };
+    use serde_json::json;
     use std::path::Path;
 
     #[test]
@@ -133,6 +249,29 @@ mod tests {
         assert_eq!(
             render_path(path, PathStyle::Relative, Some(root)),
             "src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn renders_objects_and_arrays_to_bounded_porcelain() {
+        let object = json!({
+            "beta": {"nested": true, "count": 2},
+            "alpha": "hello   world",
+        });
+        let rendered = render_json_porcelain(&object, JsonPorcelainConfig::default());
+        assert_eq!(
+            rendered,
+            "alpha: \"hello world\"\nbeta: {count=2, nested=true}"
+        );
+
+        let array = json!([
+            {"id": 1, "title": "first"},
+            {"id": 2, "title": "second"},
+        ]);
+        let rendered = render_json_porcelain(&array, JsonPorcelainConfig::default());
+        assert_eq!(
+            rendered,
+            "2 item(s)\n[1] {id=1, title=\"first\"}\n[2] {id=2, title=\"second\"}"
         );
     }
 }
