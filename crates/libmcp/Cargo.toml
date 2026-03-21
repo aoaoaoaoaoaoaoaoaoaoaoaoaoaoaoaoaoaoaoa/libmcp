@@ -8,6 +8,7 @@ description.workspace = true
 readme.workspace = true
 
 [dependencies]
+libmcp-derive = { path = "../libmcp-derive" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

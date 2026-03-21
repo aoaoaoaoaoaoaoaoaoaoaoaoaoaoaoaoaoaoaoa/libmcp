@@ -1,10 +1,13 @@
 //! `libmcp` is the shared operational spine for hardened MCP servers.
 
+extern crate self as libmcp;
+
 pub mod fault;
 pub mod health;
 pub mod host;
 pub mod jsonrpc;
 pub mod normalize;
+pub mod projection;
 pub mod render;
 pub mod replay;
 pub mod telemetry;
@@ -30,6 +33,10 @@ pub use normalize::{
     NumericParseError, PathNormalizeError, normalize_ascii_token, normalize_local_path,
     parse_human_unsigned_u64, saturating_u64_to_usize,
 };
+pub use projection::{
+    FallbackJsonProjection, ProjectionError, ProjectionPolicy, SelectorProjection, SelectorRef,
+    StructuredProjection, SurfaceKind, SurfacePolicy, ToolProjection,
+};
 pub use render::{
     DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,
     collapse_inline_whitespace, render_json_porcelain, with_presentation_properties,
@@ -37,3 +44,5 @@ pub use render::{
 pub use replay::ReplayContract;
 pub use telemetry::{TelemetryLog, ToolErrorDetail, ToolOutcome};
 pub use types::{Generation, InvariantViolation};
+
+pub use libmcp_derive::{SelectorProjection, ToolProjection};

@@ -1,6 +1,8 @@
 //! Shared test helpers for `libmcp` consumers.
 
+use libmcp::{SurfaceKind, ToolProjection};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},
@@ -29,4 +31,132 @@ where
         records.push(parsed);
     }
     Ok(records)
+}
+
+/// Assertion failure for projection doctrine checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionAssertion {
+    path: String,
+    message: String,
+}
+
+impl ProjectionAssertion {
+    fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ProjectionAssertion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.path, self.message)
+    }
+}
+
+impl std::error::Error for ProjectionAssertion {}
+
+/// Asserts that a projection obeys the doctrine implied by its surface policy.
+pub fn assert_projection_doctrine<T>(projection: &T) -> Result<(), ProjectionAssertion>
+where
+    T: ToolProjection,
+{
+    let concise = projection
+        .concise_projection()
+        .map_err(|error| ProjectionAssertion::new("$concise", error.to_string()))?;
+    let full = projection
+        .full_projection()
+        .map_err(|error| ProjectionAssertion::new("$full", error.to_string()))?;
+    let policy = projection.projection_policy();
+    if policy.forbid_opaque_ids {
+        assert_no_opaque_ids(&concise)?;
+        assert_no_opaque_ids(&full)?;
+    }
+    if policy.reference_only {
+        assert_reference_only(&concise)?;
+        assert_reference_only(&full)?;
+    }
+    if matches!(policy.kind, SurfaceKind::List) {
+        assert_list_shape(&concise)?;
+        assert_list_shape(&full)?;
+    }
+    Ok(())
+}
+
+/// Asserts that a JSON value does not leak opaque database identifiers.
+pub fn assert_no_opaque_ids(value: &Value) -> Result<(), ProjectionAssertion> {
+    walk(value, "$", &mut |path, value| {
+        if let Value::Object(object) = value {
+            for key in object.keys() {
+                if key == "id" || key.ends_with("_id") {
+                    return Err(ProjectionAssertion::new(
+                        format!("{path}.{key}"),
+                        "opaque identifier field leaked into model-facing projection",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Asserts that a list-like surface does not inline prose bodies.
+pub fn assert_list_shape(value: &Value) -> Result<(), ProjectionAssertion> {
+    walk(value, "$", &mut |path, value| {
+        if let Value::Object(object) = value {
+            for key in object.keys() {
+                if matches!(
+                    key.as_str(),
+                    "body" | "payload_preview" | "analysis" | "rationale"
+                ) {
+                    return Err(ProjectionAssertion::new(
+                        format!("{path}.{key}"),
+                        "list surface leaked body-like content",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Asserts that a reference-only surface does not inline large textual content.
+pub fn assert_reference_only(value: &Value) -> Result<(), ProjectionAssertion> {
+    walk(value, "$", &mut |path, value| match value {
+        Value::Object(object) => {
+            for key in object.keys() {
+                if matches!(key.as_str(), "body" | "content" | "text" | "bytes") {
+                    return Err(ProjectionAssertion::new(
+                        format!("{path}.{key}"),
+                        "reference-only surface inlined artifact content",
+                    ));
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    })
+}
+
+fn walk(
+    value: &Value,
+    path: &str,
+    visitor: &mut impl FnMut(&str, &Value) -> Result<(), ProjectionAssertion>,
+) -> Result<(), ProjectionAssertion> {
+    visitor(path, value)?;
+    match value {
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                walk(item, format!("{path}[{index}]").as_str(), visitor)?;
+            }
+        }
+        Value::Object(object) => {
+            for (key, child) in object {
+                walk(child, format!("{path}.{key}").as_str(), visitor)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
 }

@@ -8,9 +8,13 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Is worker fragility isolated behind an explicit replay policy?
 - Are replay contracts typed and local to the request surface?
 - Are faults typed and connected to recovery semantics?
+- Do tool surfaces cross an explicit projection boundary rather than serializing
+  raw domain/store structs directly?
 - Do nontrivial tools default to porcelain output?
 - Are `render` and `detail` treated as orthogonal controls?
 - Does `detail=concise` return an actual summary rather than the full payload?
+- Are the projection traits or derive-macro happy path used on hot surfaces,
+  with generic JSON fallbacks reserved for explicit escape hatches?
 - Are library render helpers used where bespoke porcelain has not yet been
   justified?
 - Is structured JSON still available where exact consumers need it?

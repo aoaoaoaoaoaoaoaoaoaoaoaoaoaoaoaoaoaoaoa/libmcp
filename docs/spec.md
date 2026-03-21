@@ -180,12 +180,24 @@ The library should therefore provide reusable primitives for:
 
 - render mode selection
 - detail selection
+- explicit projection traits separating domain records from model-facing output
+- derive-macro happy paths for concise/full projection structs
 - bounded/truncated text shaping
 - stable note emission
 - path rendering
 - common porcelain patterns
 - generic JSON-to-porcelain projection for consumers that have not yet earned
   bespoke renderers
+
+The intended happy path is not “serialize whatever domain object you already
+have.” The intended happy path is:
+
+1. define a model-facing projection
+2. declare its surface policy
+3. render porcelain from that projection
+
+Consumers may still use generic JSON fallbacks, but they should feel like an
+explicit escape hatch rather than the primary design path.
 
 `libmcp` standardizes only the minimal shared detail axis
 `concise|full`. Consumers may add richer local taxonomies when their tool
