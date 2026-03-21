@@ -35,7 +35,7 @@ pub use normalize::{
 };
 pub use projection::{
     FallbackJsonProjection, ProjectionError, ProjectionPolicy, SelectorProjection, SelectorRef,
-    StructuredProjection, SurfaceKind, SurfacePolicy, ToolProjection,
+    StructuredProjection, SurfaceKind, SurfacePolicy, TimestampText, ToolProjection,
 };
 pub use render::{
     DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,

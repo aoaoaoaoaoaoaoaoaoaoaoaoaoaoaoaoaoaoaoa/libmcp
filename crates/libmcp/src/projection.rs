@@ -4,7 +4,9 @@ use crate::render::{DetailLevel, JsonPorcelainConfig, render_json_porcelain};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use thiserror::Error;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const OVERVIEW_CONCISE_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
     max_lines: 10,
@@ -115,6 +117,35 @@ pub struct SelectorRef {
     /// Optional human-facing title.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+/// Uniform RFC3339 timestamp text for model-facing surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct TimestampText(String);
+
+impl TimestampText {
+    /// Returns the rendered timestamp string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TimestampText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl From<OffsetDateTime> for TimestampText {
+    fn from(timestamp: OffsetDateTime) -> Self {
+        Self(
+            timestamp
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| timestamp.unix_timestamp().to_string()),
+        )
+    }
 }
 
 /// Anything that can produce a selector reference.
@@ -236,6 +267,7 @@ impl SurfacePolicy for FallbackJsonProjection {
 mod tests {
     use super::{StructuredProjection as _, SurfaceKind, SurfacePolicy as _};
     use crate::{DetailLevel, SelectorProjection, SelectorRef, ToolProjection};
+    use time::OffsetDateTime;
 
     #[derive(Clone, SelectorProjection)]
     struct HypothesisSelector {
@@ -304,5 +336,23 @@ mod tests {
             Err(_) => return,
         };
         assert!(porcelain.contains("slug: \"matched-lp-site-traces\""));
+    }
+
+    #[test]
+    fn timestamp_text_serializes_as_rfc3339_string() {
+        let timestamp = OffsetDateTime::from_unix_timestamp(0);
+        assert!(timestamp.is_ok());
+        let timestamp = match timestamp {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let rendered = super::TimestampText::from(timestamp);
+        let json = serde_json::to_value(&rendered);
+        assert!(json.is_ok());
+        let json = match json {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(json, serde_json::json!("1970-01-01T00:00:00Z"));
     }
 }
