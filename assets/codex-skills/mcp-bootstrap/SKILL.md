@@ -1,23 +1,23 @@
 ---
 name: mcp-bootstrap
-description: Bootstrap or retrofit an industrial-grade MCP server with libmcp's host/worker posture, replay contracts, typed faults, porcelain-by-default output, telemetry, and regression tests. Use when creating a new MCP, hardening an existing one, or reviewing an MCP for long-lived session safety, hot rollout, crash recovery, model UX, or worktree/workspace correctness.
+description: Bootstrap or retrofit an industrial-grade MCP server with `libmcp` patterns. Use when creating a new MCP, hardening an existing one, or reviewing one for host/worker separation, replay safety, typed faults, porcelain output, telemetry, rollout, or recovery testing.
 ---
 
 # MCP Bootstrap
 
-`libmcp` is the source of truth for the hard posture of long-lived MCPs.
+Use this skill when a target MCP should follow the architecture and operational
+patterns used by `libmcp`.
 
-Use this skill when:
-
-- bootstrapping a new MCP
-- retrofitting an existing MCP onto `libmcp`
-- reviewing an MCP for operational hardening or model UX doctrine
+`libmcp` is the source of truth. This skill is a routing guide to the relevant
+reference docs, not a substitute for them.
 
 Start by classifying the target:
 
-- Fresh bootstrap: the project can adopt the architecture directly.
-- Retrofit: the project already has live behavior or ad hoc recovery logic that
-  must be tightened deliberately.
+- Fresh bootstrap: the project can adopt the `libmcp` architecture directly.
+- Retrofit: the project already has live behavior or recovery logic that must be
+  tightened deliberately.
+
+Then choose exactly one surface.
 
 ## Fresh Bootstrap
 
@@ -26,15 +26,16 @@ Read:
 - [references/bootstrap-fresh.md](references/bootstrap-fresh.md)
 - [references/checklist.md](references/checklist.md)
 
-Default posture:
+Default pattern:
 
-- let a stable host own the public MCP transport and session
-- let disposable workers own fragile runtime dependencies
-- make replay legality explicit per request surface
-- ship health, telemetry, and recovery tests before feature sprawl
-- default nontrivial tool output to porcelain
-- treat `render` and `detail` as orthogonal controls
-- keep structured JSON output available where exact consumers need it
+- a stable host owns the public MCP transport, session state, request IDs,
+  replay policy, rollout, and user-facing fault shaping
+- a disposable worker owns fragile runtime dependencies and tool execution
+- each request surface defines explicitly whether replay is safe
+- health, telemetry, and recovery tests land before feature sprawl
+- nontrivial tools default to `render=porcelain`
+- `render` and `detail` stay separate
+- structured JSON remains available for exact consumers
 
 ## Retrofit
 
@@ -43,20 +44,22 @@ Read:
 - [references/bootstrap-retrofit.md](references/bootstrap-retrofit.md)
 - [references/checklist.md](references/checklist.md)
 
-Retrofit in order:
+Retrofitting order:
 
-- separate durable transport ownership from fragile execution
-- define typed faults and replay contracts before adding retries
-- adopt the model UX doctrine, especially porcelain-by-default output
-- make `detail=concise|full` real before inventing consumer-local verbosity knobs
+- separate durable transport and session ownership from fragile execution
+- define replay classes and typed faults before adding retries
+- replace ad hoc dumps with porcelain-by-default output
+- make `render` and `detail=concise|full` real before adding extra verbosity
+  knobs
 - add rollout, telemetry, and recovery tests before claiming stability
 
 ## Guardrails
 
-- Prefer a host/worker split for any long-lived MCP.
-- Do not auto-retry or auto-replay side-effecting requests without an explicit
-  proof of safety.
-- Treat `$mcp-bootstrap` as versioned `libmcp` collateral, not independent lore.
+- Prefer a host/worker split for long-lived MCPs.
+- Never auto-replay side-effecting requests unless safety is explicit in code.
 - Re-open the reference docs when details matter; do not rely on memory.
+- Treat this skill as a pointer to `libmcp` patterns and docs, not an
+  independent spec.
 
-This skill is intentionally thin. The reference docs are the payload.
+This skill is intentionally thin. The reference docs contain the concrete
+implementation guidance.
