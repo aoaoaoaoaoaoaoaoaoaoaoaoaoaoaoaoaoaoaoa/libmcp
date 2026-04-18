@@ -57,6 +57,7 @@ Porcelain should be:
 - deterministic
 - bounded
 - summary-first
+- shape-aware
 
 Structured `render=json` should remain available.
 
@@ -65,6 +66,11 @@ different clothes.
 
 Use library rendering helpers where possible. Do not default to pretty-printed
 JSON dumps and call that porcelain.
+
+Porcelain is not JSON with fewer braces. Avoid JSON in porcelain unless the
+result is irreducibly tree-shaped. When a result is tabular, render an honest
+compact table: one header row, `|` separators, no quotes around ordinary string
+cells, and no decorative box drawing. Token efficiency is part of the contract.
 
 ## 5. Boundary normalization
 

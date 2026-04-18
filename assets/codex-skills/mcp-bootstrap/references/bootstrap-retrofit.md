@@ -9,6 +9,9 @@ scratch.
 2. Define typed replay contracts and typed faults.
 3. Replace ad hoc backend dumps with porcelain-by-default output.
    Make `render` and `detail` orthogonal before you start bikeshedding prose.
+   Do not rebrand pretty-printed JSON as porcelain. If the data is tabular,
+   render a compact `|`-separated table with headers and unquoted scalar cells;
+   reserve JSON-shaped porcelain for data that is genuinely tree-shaped.
 4. Add health, telemetry, and recovery tests.
 5. Only then promise hot rollout or stronger operational guarantees.
 

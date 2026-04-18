@@ -34,6 +34,9 @@ Default pattern:
 - each request surface defines explicitly whether replay is safe
 - health, telemetry, and recovery tests land before feature sprawl
 - nontrivial tools default to `render=porcelain`
+- porcelain output should avoid JSON unless the underlying data is irreducibly
+  tree-shaped; tabular data should render as compact text tables with a header
+  row, `|` separators, and unquoted scalar cells
 - `render` and `detail` stay separate
 - structured JSON remains available for exact consumers
 
@@ -49,6 +52,9 @@ Retrofitting order:
 - separate durable transport and session ownership from fragile execution
 - define replay classes and typed faults before adding retries
 - replace ad hoc dumps with porcelain-by-default output
+- replace pretty-printed JSON with intentional text renderers; use compact
+  table renderers for rows and reserve JSON-shaped porcelain for cases where no
+  flatter representation is honest
 - make `render` and `detail=concise|full` real before adding extra verbosity
   knobs
 - add rollout, telemetry, and recovery tests before claiming stability

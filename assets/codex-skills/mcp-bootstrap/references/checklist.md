@@ -11,6 +11,9 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Do tool surfaces cross an explicit projection boundary rather than serializing
   raw domain/store structs directly?
 - Do nontrivial tools default to porcelain output?
+- Does porcelain avoid JSON unless the data is irreducibly tree-shaped?
+- Do tabular results render as compact tables with headers, `|` separators, and
+  unquoted scalar cells?
 - Are `render` and `detail` treated as orthogonal controls?
 - Does `detail=concise` return an actual summary rather than the full payload?
 - Are the projection traits or derive-macro happy path used on hot surfaces,
