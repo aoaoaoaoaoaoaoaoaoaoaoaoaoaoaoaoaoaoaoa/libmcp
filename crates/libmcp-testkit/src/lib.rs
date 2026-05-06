@@ -9,6 +9,11 @@ use std::{
     path::Path,
 };
 
+const OPAQUE_ID_FIELD: &str = "id";
+const OPAQUE_ID_SUFFIX: &str = "_id";
+const LIST_BODY_FIELDS: &[&str] = &["body", "payload_preview", "analysis", "rationale"];
+const REFERENCE_BODY_FIELDS: &[&str] = &["body", "content", "text", "bytes"];
+
 /// Reads an append-only JSONL file into typed records.
 pub fn read_json_lines<T>(path: &Path) -> io::Result<Vec<T>>
 where
@@ -89,7 +94,7 @@ pub fn assert_no_opaque_ids(value: &Value) -> Result<(), ProjectionAssertion> {
     walk(value, "$", &mut |path, value| {
         if let Value::Object(object) = value {
             for key in object.keys() {
-                if key == "id" || key.ends_with("_id") {
+                if is_opaque_identifier_field(key) {
                     return Err(ProjectionAssertion::new(
                         format!("{path}.{key}"),
                         "opaque identifier field leaked into model-facing projection",
@@ -106,10 +111,7 @@ pub fn assert_list_shape(value: &Value) -> Result<(), ProjectionAssertion> {
     walk(value, "$", &mut |path, value| {
         if let Value::Object(object) = value {
             for key in object.keys() {
-                if matches!(
-                    key.as_str(),
-                    "body" | "payload_preview" | "analysis" | "rationale"
-                ) {
+                if LIST_BODY_FIELDS.contains(&key.as_str()) {
                     return Err(ProjectionAssertion::new(
                         format!("{path}.{key}"),
                         "list surface leaked body-like content",
@@ -126,7 +128,7 @@ pub fn assert_reference_only(value: &Value) -> Result<(), ProjectionAssertion> {
     walk(value, "$", &mut |path, value| match value {
         Value::Object(object) => {
             for key in object.keys() {
-                if matches!(key.as_str(), "body" | "content" | "text" | "bytes") {
+                if REFERENCE_BODY_FIELDS.contains(&key.as_str()) {
                     return Err(ProjectionAssertion::new(
                         format!("{path}.{key}"),
                         "reference-only surface inlined artifact content",
@@ -159,4 +161,8 @@ fn walk(
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
     Ok(())
+}
+
+fn is_opaque_identifier_field(key: &str) -> bool {
+    key == OPAQUE_ID_FIELD || key.ends_with(OPAQUE_ID_SUFFIX)
 }

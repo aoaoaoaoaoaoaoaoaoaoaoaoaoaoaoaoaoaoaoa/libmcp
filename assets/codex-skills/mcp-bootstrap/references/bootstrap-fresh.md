@@ -39,6 +39,9 @@ Baseline classes:
 - timeout
 - downstream response
 - resource
+- replay exhaustion
+- rollout disruption
+- invariant breach
 
 Faults should flow through health, telemetry, and user-facing shaping.
 
@@ -64,8 +67,8 @@ Structured `render=json` should remain available.
 `json + concise` should be a structured summary, not merely the full payload in
 different clothes.
 
-Use library rendering helpers where possible. Do not default to pretty-printed
-JSON dumps and call that porcelain.
+Use library projection traits, derive macros, and rendering helpers where
+possible. Do not default to pretty-printed JSON dumps and call that porcelain.
 
 Porcelain is not JSON with fewer braces. Avoid JSON in porcelain unless the
 result is irreducibly tree-shaped. When a result is tabular, render an honest

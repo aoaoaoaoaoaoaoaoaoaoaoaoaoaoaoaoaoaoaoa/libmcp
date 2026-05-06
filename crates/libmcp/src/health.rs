@@ -1,6 +1,6 @@
 //! Standard health and telemetry payloads.
 
-use crate::{fault::Fault, types::Generation};
+use crate::{fault::Fault, jsonrpc::RpcMethod, types::Generation};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +70,7 @@ pub struct TelemetryTotals {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MethodTelemetry {
     /// Method name.
-    pub method: String,
+    pub method: RpcMethod,
     /// Total requests for this method.
     pub request_count: u64,
     /// Successful requests.

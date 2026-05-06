@@ -1,10 +1,11 @@
 //! Lightweight JSON-RPC frame helpers.
 
 use crate::normalize::normalize_ascii_token;
+use crate::types::InvariantViolation;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io;
+use std::{fmt, io};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use url::Url;
 
@@ -44,6 +45,114 @@ impl RequestId {
     }
 }
 
+/// JSON-RPC method token.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct RpcMethod(String);
+
+impl RpcMethod {
+    const INITIALIZE: &'static str = "initialize";
+    const INITIALIZED: &'static str = "initialized";
+    const NOTIFICATIONS_INITIALIZED: &'static str = "notifications/initialized";
+    const TOOLS_CALL: &'static str = "tools/call";
+
+    /// Constructs a method token.
+    ///
+    /// JSON-RPC method tokens must be non-empty.
+    pub fn try_new(method: impl Into<String>) -> Result<Self, InvariantViolation> {
+        let method = method.into();
+        if method.trim().is_empty() {
+            return Err(InvariantViolation::new(
+                "JSON-RPC method token must be non-empty",
+            ));
+        }
+        Ok(Self(method))
+    }
+
+    /// Returns the MCP `tools/call` method token.
+    #[must_use]
+    pub fn tools_call() -> Self {
+        Self(Self::TOOLS_CALL.to_owned())
+    }
+
+    /// Parses a method token from JSON.
+    #[must_use]
+    pub fn from_json_value(value: &Value) -> Option<Self> {
+        value.as_str().and_then(|method| Self::try_new(method).ok())
+    }
+
+    /// Returns the method text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Returns whether this is the JSON-RPC initialize request.
+    #[must_use]
+    pub fn is_initialize(&self) -> bool {
+        self.as_str() == Self::INITIALIZE
+    }
+
+    /// Returns whether this is an initialized notification spelling.
+    #[must_use]
+    pub fn is_initialized_notification(&self) -> bool {
+        matches!(
+            self.as_str(),
+            Self::INITIALIZED | Self::NOTIFICATIONS_INITIALIZED
+        )
+    }
+
+    /// Returns whether this is an MCP tool-call request.
+    #[must_use]
+    pub fn is_tools_call(&self) -> bool {
+        self.as_str() == Self::TOOLS_CALL
+    }
+}
+
+impl fmt::Display for RpcMethod {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// MCP tool name token.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ToolName(String);
+
+impl ToolName {
+    const ADVANCED_LSP_REQUEST_NORMALIZED: &'static str = "advancedlsprequest";
+
+    /// Constructs a tool-name token.
+    ///
+    /// Tool names must be non-empty.
+    pub fn try_new(name: impl Into<String>) -> Result<Self, InvariantViolation> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(InvariantViolation::new("tool name must be non-empty"));
+        }
+        Ok(Self(name))
+    }
+
+    /// Returns the tool-name text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Returns whether the tool name denotes the common advanced-LSP proxy.
+    #[must_use]
+    pub fn is_advanced_lsp_request(&self) -> bool {
+        normalize_ascii_token(self.as_str()) == Self::ADVANCED_LSP_REQUEST_NORMALIZED
+    }
+}
+
+impl fmt::Display for ToolName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Parsed JSON-RPC frame.
 #[derive(Debug, Clone)]
 pub struct FramedMessage {
@@ -77,8 +186,7 @@ impl FramedMessage {
         let method = self
             .value
             .get("method")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
+            .and_then(RpcMethod::from_json_value);
         let request_id = self.value.get("id").and_then(RequestId::from_json_value);
         match (method, request_id) {
             (Some(method), Some(id)) => RpcEnvelopeKind::Request { id, method },
@@ -100,12 +208,12 @@ pub enum RpcEnvelopeKind {
         /// Request identifier.
         id: RequestId,
         /// Method name.
-        method: String,
+        method: RpcMethod,
     },
     /// Notification without an ID.
     Notification {
         /// Method name.
-        method: String,
+        method: RpcMethod,
     },
     /// Response with an ID.
     Response {
@@ -122,9 +230,9 @@ pub enum RpcEnvelopeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallMeta {
     /// Tool name.
-    pub tool_name: String,
+    pub tool_name: ToolName,
     /// Nested LSP method when the tool proxies LSP-style requests.
-    pub lsp_method: Option<String>,
+    pub lsp_method: Option<RpcMethod>,
     /// Best-effort path hint for telemetry grouping.
     pub path_hint: Option<String>,
 }
@@ -140,14 +248,14 @@ pub enum FrameReadOutcome {
 
 /// Extracts `tools/call` metadata from a JSON-RPC frame.
 #[must_use]
-pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &str) -> Option<ToolCallMeta> {
-    if rpc_method != "tools/call" {
+pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &RpcMethod) -> Option<ToolCallMeta> {
+    if !rpc_method.is_tools_call() {
         return None;
     }
     let params = frame.value.get("params")?.as_object()?;
-    let tool_name = params.get("name")?.as_str()?.to_owned();
+    let tool_name = ToolName::try_new(params.get("name")?.as_str()?).ok()?;
     let tool_arguments = params.get("arguments");
-    let lsp_method = if normalize_ascii_token(tool_name.as_str()) == "advancedlsprequest" {
+    let lsp_method = if tool_name.is_advanced_lsp_request() {
         tool_arguments
             .and_then(Value::as_object)
             .and_then(|arguments| {
@@ -157,7 +265,7 @@ pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &str) -> Option<T
                     .or_else(|| arguments.get("lspMethod"))
             })
             .and_then(Value::as_str)
-            .map(str::to_owned)
+            .and_then(|method| RpcMethod::try_new(method).ok())
     } else {
         None
     };
@@ -274,7 +382,9 @@ fn normalize_path_hint(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FramedMessage, RequestId, RpcEnvelopeKind, parse_tool_call_meta};
+    use super::{
+        FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolName, parse_tool_call_meta,
+    };
     use serde_json::json;
 
     #[test]
@@ -290,6 +400,14 @@ mod tests {
     }
 
     #[test]
+    fn method_and_tool_tokens_reject_empty_text() {
+        assert!(RpcMethod::try_new("tools/call").is_ok());
+        assert!(RpcMethod::try_new("").is_err());
+        assert!(ToolName::try_new("hover").is_ok());
+        assert!(ToolName::try_new(" ").is_err());
+    }
+
+    #[test]
     fn classifies_request_frames() {
         let frame =
             FramedMessage::parse(br#"{"jsonrpc":"2.0","id":7,"method":"tools/call"}"#.to_vec());
@@ -300,7 +418,7 @@ mod tests {
         };
         assert!(matches!(
             frame.classify(),
-            RpcEnvelopeKind::Request { method, .. } if method == "tools/call"
+            RpcEnvelopeKind::Request { method, .. } if method.is_tools_call()
         ));
     }
 
@@ -325,14 +443,17 @@ mod tests {
             Ok(value) => value,
             Err(_) => return,
         };
-        let meta = parse_tool_call_meta(&frame, "tools/call");
+        let meta = parse_tool_call_meta(&frame, &RpcMethod::tools_call());
         assert!(meta.is_some());
         let meta = match meta {
             Some(value) => value,
             None => return,
         };
-        assert_eq!(meta.tool_name, "advanced_lsp_request");
-        assert_eq!(meta.lsp_method.as_deref(), Some("textDocument/hover"));
+        assert_eq!(meta.tool_name.as_str(), "advanced_lsp_request");
+        assert_eq!(
+            meta.lsp_method.as_ref().map(RpcMethod::as_str),
+            Some("textDocument/hover")
+        );
         assert_eq!(meta.path_hint.as_deref(), Some("/tmp/example.rs"));
     }
 }

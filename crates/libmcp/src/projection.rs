@@ -8,45 +8,55 @@ use std::fmt;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const OVERVIEW_CONCISE_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 10,
-    max_inline_chars: 144,
+const OVERVIEW_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
+    concise: JsonPorcelainConfig {
+        max_lines: 10,
+        max_inline_chars: 144,
+    },
+    full: JsonPorcelainConfig {
+        max_lines: 28,
+        max_inline_chars: 240,
+    },
 };
-const OVERVIEW_FULL_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 28,
-    max_inline_chars: 240,
+const LIST_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
+    concise: JsonPorcelainConfig {
+        max_lines: 16,
+        max_inline_chars: 128,
+    },
+    full: JsonPorcelainConfig {
+        max_lines: 32,
+        max_inline_chars: 176,
+    },
 };
-const LIST_CONCISE_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 16,
-    max_inline_chars: 128,
+const READ_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
+    concise: JsonPorcelainConfig {
+        max_lines: 18,
+        max_inline_chars: 176,
+    },
+    full: JsonPorcelainConfig {
+        max_lines: 40,
+        max_inline_chars: 320,
+    },
 };
-const LIST_FULL_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 32,
-    max_inline_chars: 176,
+const MUTATION_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
+    concise: JsonPorcelainConfig {
+        max_lines: 12,
+        max_inline_chars: 160,
+    },
+    full: JsonPorcelainConfig {
+        max_lines: 24,
+        max_inline_chars: 256,
+    },
 };
-const READ_CONCISE_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 18,
-    max_inline_chars: 176,
-};
-const READ_FULL_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 40,
-    max_inline_chars: 320,
-};
-const MUTATION_CONCISE_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 12,
-    max_inline_chars: 160,
-};
-const MUTATION_FULL_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 24,
-    max_inline_chars: 256,
-};
-const OPS_CONCISE_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 8,
-    max_inline_chars: 160,
-};
-const OPS_FULL_CONFIG: JsonPorcelainConfig = JsonPorcelainConfig {
-    max_lines: 24,
-    max_inline_chars: 240,
+const OPS_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
+    concise: JsonPorcelainConfig {
+        max_lines: 8,
+        max_inline_chars: 160,
+    },
+    full: JsonPorcelainConfig {
+        max_lines: 24,
+        max_inline_chars: 240,
+    },
 };
 
 /// Projection failure.
@@ -73,6 +83,26 @@ pub enum SurfaceKind {
     Ops,
 }
 
+/// Detail-indexed porcelain bounds for one surface kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfacePorcelainBounds {
+    /// Concise porcelain bounds.
+    pub concise: JsonPorcelainConfig,
+    /// Full porcelain bounds.
+    pub full: JsonPorcelainConfig,
+}
+
+impl SurfacePorcelainBounds {
+    /// Selects bounds for a detail level.
+    #[must_use]
+    pub const fn for_detail(self, detail: DetailLevel) -> JsonPorcelainConfig {
+        match detail {
+            DetailLevel::Concise => self.concise,
+            DetailLevel::Full => self.full,
+        }
+    }
+}
+
 /// Projection policy derived from the surface kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProjectionPolicy {
@@ -82,29 +112,26 @@ pub struct ProjectionPolicy {
     pub forbid_opaque_ids: bool,
     /// Whether the surface is reference-only and must not inline bodies.
     pub reference_only: bool,
-    /// Concise porcelain bounds.
-    pub concise_porcelain: JsonPorcelainConfig,
-    /// Full porcelain bounds.
-    pub full_porcelain: JsonPorcelainConfig,
+    /// Detail-indexed porcelain bounds.
+    pub porcelain: SurfacePorcelainBounds,
 }
 
 impl ProjectionPolicy {
     /// Builds a policy from the type-level doctrine.
     #[must_use]
     pub fn from_surface(kind: SurfaceKind, forbid_opaque_ids: bool, reference_only: bool) -> Self {
-        let (concise_porcelain, full_porcelain) = match kind {
-            SurfaceKind::Overview => (OVERVIEW_CONCISE_CONFIG, OVERVIEW_FULL_CONFIG),
-            SurfaceKind::List => (LIST_CONCISE_CONFIG, LIST_FULL_CONFIG),
-            SurfaceKind::Read => (READ_CONCISE_CONFIG, READ_FULL_CONFIG),
-            SurfaceKind::Mutation => (MUTATION_CONCISE_CONFIG, MUTATION_FULL_CONFIG),
-            SurfaceKind::Ops => (OPS_CONCISE_CONFIG, OPS_FULL_CONFIG),
+        let porcelain = match kind {
+            SurfaceKind::Overview => OVERVIEW_BOUNDS,
+            SurfaceKind::List => LIST_BOUNDS,
+            SurfaceKind::Read => READ_BOUNDS,
+            SurfaceKind::Mutation => MUTATION_BOUNDS,
+            SurfaceKind::Ops => OPS_BOUNDS,
         };
         Self {
             kind,
             forbid_opaque_ids,
             reference_only,
-            concise_porcelain,
-            full_porcelain,
+            porcelain,
         }
     }
 }
@@ -191,10 +218,8 @@ pub trait ToolProjection: StructuredProjection + SurfacePolicy {
     /// Renders porcelain for the chosen detail level.
     fn porcelain_projection(&self, detail: DetailLevel) -> Result<String, ProjectionError> {
         let policy = self.projection_policy();
-        let (value, config) = match detail {
-            DetailLevel::Concise => (self.concise_projection()?, policy.concise_porcelain),
-            DetailLevel::Full => (self.full_projection()?, policy.full_porcelain),
-        };
+        let value = self.structured_projection(detail)?;
+        let config = policy.porcelain.for_detail(detail);
         Ok(render_json_porcelain(&value, config))
     }
 }

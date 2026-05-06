@@ -1,7 +1,9 @@
 //! Durable public-session runtime primitives for hardened MCP hosts.
 
 use crate::{
-    jsonrpc::{FramedMessage, RequestId, RpcEnvelopeKind, ToolCallMeta, parse_tool_call_meta},
+    jsonrpc::{
+        FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolCallMeta, parse_tool_call_meta,
+    },
     replay::ReplayContract,
 };
 use schemars::JsonSchema;
@@ -76,7 +78,7 @@ impl HostRejection {
 #[derive(Debug, Clone)]
 pub struct PendingRequest {
     /// Public JSON-RPC method.
-    pub method: String,
+    pub method: RpcMethod,
     /// Stable ordering sequence across retries.
     pub sequence: u64,
     /// Original request frame.
@@ -130,7 +132,7 @@ pub struct ReplayRequeueOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingRequestSnapshot {
     request_id: RequestId,
-    method: String,
+    method: RpcMethod,
     sequence: u64,
     frame: Vec<u8>,
     replay_contract: ReplayContract,
@@ -283,7 +285,7 @@ impl HostSessionKernel {
     /// Observes a client frame before it is forwarded or queued.
     pub fn observe_client_frame(&mut self, frame: &FramedMessage) {
         match frame.classify() {
-            RpcEnvelopeKind::Request { id, method } if method == "initialize" => {
+            RpcEnvelopeKind::Request { id, method } if method.is_initialize() => {
                 let prior_initialized = self
                     .initialization_seed
                     .as_ref()
@@ -296,9 +298,7 @@ impl HostSessionKernel {
                     initialized_notification: prior_initialized,
                 });
             }
-            RpcEnvelopeKind::Notification { method }
-                if method == "notifications/initialized" || method == "initialized" =>
-            {
+            RpcEnvelopeKind::Notification { method } if method.is_initialized_notification() => {
                 if let Some(seed) = self.initialization_seed.as_mut() {
                     seed.initialized_notification = Some(frame.payload.clone());
                 }
@@ -347,10 +347,10 @@ impl HostSessionKernel {
         replay_contract: ReplayContract,
     ) {
         if let RpcEnvelopeKind::Request { id, method } = frame.classify() {
-            if method == "initialize" {
+            if method.is_initialize() {
                 self.session_phase = SessionPhase::Live;
             }
-            let parsed_tool_meta = parse_tool_call_meta(frame, method.as_str());
+            let parsed_tool_meta = parse_tool_call_meta(frame, &method);
             let prior = self.pending.get(&id).cloned();
             let (sequence, started_at, tool_call_meta) = if let Some(previous) = prior {
                 (
@@ -405,7 +405,7 @@ impl HostSessionKernel {
         let mut rejected = Vec::<RejectedReplay>::new();
 
         for (request_id, request) in ordered_pending {
-            if request.method == "initialize" {
+            if request.method.is_initialize() {
                 continue;
             }
 
@@ -473,7 +473,7 @@ impl HostSessionKernelSnapshot {
             let started_at = now
                 .checked_sub(Duration::from_millis(snapshot.age_ms))
                 .unwrap_or(now);
-            let tool_call_meta = parse_tool_call_meta(&frame, snapshot.method.as_str());
+            let tool_call_meta = parse_tool_call_meta(&frame, &snapshot.method);
             let previous = pending.insert(
                 snapshot.request_id,
                 PendingRequest {
@@ -607,8 +607,8 @@ fn duration_millis_u64(duration: Duration) -> u64 {
 mod tests {
     use super::{
         FramedMessage, HostRejection, HostSessionKernel, HostSessionKernelSnapshot,
-        InitializationSeed, ReplayBudget, RequestId, SeededInitializeRequest, SessionPhase,
-        prepare_replay_seed, synthesized_initialized_notification,
+        InitializationSeed, ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest,
+        SessionPhase, prepare_replay_seed, synthesized_initialized_notification,
     };
     use serde_json::json;
 
@@ -680,7 +680,7 @@ mod tests {
             }),
             pending: vec![super::PendingRequestSnapshot {
                 request_id: RequestId::Number("7".to_owned()),
-                method: "tools/call".to_owned(),
+                method: RpcMethod::tools_call(),
                 sequence: 3,
                 frame: pending_payload,
                 replay_contract: crate::ReplayContract::Convergent,
@@ -722,7 +722,7 @@ mod tests {
             None => return,
         };
         assert_eq!(pending.sequence, 3);
-        assert_eq!(pending.method, "tools/call");
+        assert!(pending.method.is_tools_call());
         assert_eq!(pending.replay_contract, crate::ReplayContract::Convergent);
         assert!(
             pending.tool_call_meta.is_some(),

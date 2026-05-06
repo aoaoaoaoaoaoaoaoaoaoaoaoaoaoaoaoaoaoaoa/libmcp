@@ -4,6 +4,20 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Field, Fields, Ident, LitStr, Result, parse_macro_input};
 
+const LIBMCP_ATTR: &str = "libmcp";
+const ATTR_KIND: &str = "kind";
+const ATTR_REFERENCE_ONLY: &str = "reference_only";
+const ATTR_ALLOW_OPAQUE_IDS: &str = "allow_opaque_ids";
+const FIELD_SELECTOR: &str = "selector";
+const FIELD_TITLE: &str = "title";
+const FIELD_SLUG: &str = "slug";
+const FIELD_SKIP: &str = "skip";
+const FIELD_SKIP_NONE: &str = "skip_none";
+const FIELD_FULL_ONLY: &str = "full_only";
+const FIELD_FULL: &str = "full";
+const FIELD_CONCISE_ONLY: &str = "concise_only";
+const DEFAULT_SURFACE_KIND: &str = "Read";
+
 /// Derives `libmcp::StructuredProjection` and `libmcp::SurfacePolicy`.
 #[proc_macro_derive(ToolProjection, attributes(libmcp))]
 pub fn derive_tool_projection(input: TokenStream) -> TokenStream {
@@ -106,11 +120,11 @@ fn expand_selector_projection(input: DeriveInput) -> Result<proc_macro2::TokenSt
 
     let slug_field = fields
         .iter()
-        .find(|field| has_field_flag(field, "selector") || field_ident(field) == "slug")
+        .find(|field| has_field_flag(field, FIELD_SELECTOR) || field_ident(field) == FIELD_SLUG)
         .ok_or_else(|| syn::Error::new_spanned(&ident, "SelectorProjection needs a slug field"))?;
     let title_field = fields
         .iter()
-        .find(|field| has_field_flag(field, "title") || field_ident(field) == "title");
+        .find(|field| has_field_flag(field, FIELD_TITLE) || field_ident(field) == FIELD_TITLE);
 
     let slug_ident = slug_field.ident.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(slug_field, "SelectorProjection needs named fields")
@@ -142,7 +156,7 @@ fn project_field(field: &Field) -> Result<proc_macro2::TokenStream> {
         .as_ref()
         .ok_or_else(|| syn::Error::new_spanned(field, "ToolProjection requires named fields"))?;
     let key = LitStr::new(field_ident(field).as_str(), ident.span());
-    if has_field_flag(field, "skip_none") {
+    if has_field_flag(field, FIELD_SKIP_NONE) {
         Ok(quote! {
             if let ::std::option::Option::Some(value) = &self.#ident {
                 object.insert(
@@ -162,13 +176,13 @@ fn project_field(field: &Field) -> Result<proc_macro2::TokenStream> {
 }
 
 fn include_in_concise(field: &Field) -> bool {
-    !has_field_flag(field, "skip")
-        && !has_field_flag(field, "full_only")
-        && !has_field_flag(field, "full")
+    !has_field_flag(field, FIELD_SKIP)
+        && !has_field_flag(field, FIELD_FULL_ONLY)
+        && !has_field_flag(field, FIELD_FULL)
 }
 
 fn include_in_full(field: &Field) -> bool {
-    !has_field_flag(field, "skip") && !has_field_flag(field, "concise_only")
+    !has_field_flag(field, FIELD_SKIP) && !has_field_flag(field, FIELD_CONCISE_ONLY)
 }
 
 fn field_ident(field: &Field) -> String {
@@ -187,9 +201,12 @@ struct ContainerAttrs {
 
 fn parse_container_attrs(attrs: &[syn::Attribute]) -> Result<ContainerAttrs> {
     let mut parsed = ContainerAttrs::default();
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("libmcp")) {
+    for attr in attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident(LIBMCP_ATTR))
+    {
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("kind") {
+            if meta.path.is_ident(ATTR_KIND) {
                 let value = meta.value()?;
                 let kind = value.parse::<LitStr>()?;
                 parsed.kind = Some(Ident::new(
@@ -198,11 +215,11 @@ fn parse_container_attrs(attrs: &[syn::Attribute]) -> Result<ContainerAttrs> {
                 ));
                 return Ok(());
             }
-            if meta.path.is_ident("reference_only") {
+            if meta.path.is_ident(ATTR_REFERENCE_ONLY) {
                 parsed.reference_only = true;
                 return Ok(());
             }
-            if meta.path.is_ident("allow_opaque_ids") {
+            if meta.path.is_ident(ATTR_ALLOW_OPAQUE_IDS) {
                 parsed.allow_opaque_ids = true;
                 return Ok(());
             }
@@ -216,7 +233,7 @@ fn has_field_flag(field: &Field, flag: &str) -> bool {
     field
         .attrs
         .iter()
-        .filter(|attr| attr.path().is_ident("libmcp"))
+        .filter(|attr| attr.path().is_ident(LIBMCP_ATTR))
         .any(|attr| attr_has_flag(attr, flag))
 }
 
@@ -235,7 +252,7 @@ fn attr_has_flag(attr: &syn::Attribute, flag: &str) -> bool {
 fn surface_kind_expr(kind: &Option<Ident>) -> proc_macro2::TokenStream {
     let ident = kind
         .clone()
-        .unwrap_or_else(|| Ident::new("Read", proc_macro2::Span::call_site()));
+        .unwrap_or_else(|| Ident::new(DEFAULT_SURFACE_KIND, proc_macro2::Span::call_site()));
     quote!(::libmcp::SurfaceKind::#ident)
 }
 

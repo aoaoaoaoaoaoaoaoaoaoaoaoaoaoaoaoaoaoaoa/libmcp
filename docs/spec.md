@@ -256,37 +256,26 @@ The rule is:
 
 ## Versioning
 
-`libmcp` `1.0.0` is defined by the first steady integration into
-`adequate_rust_mcp`.
+`libmcp` `1.0.0` is the first stable public contract for the shared operational
+spine.
 
 The `1.0.0` contract means:
 
-- the extracted seam proved real in `adequate_rust_mcp`
 - the skill and spec align with the implementation
 - the model UX doctrine is embodied in helpers and tests, not just prose
 - the core contracts are stable enough to be depended on directly
 
 `libmcp` `1.1.0` adds:
 
-- reusable host-session kernel extraction from `adequate_rust_mcp`
+- reusable host-session kernel primitives
 - generic snapshot-file handoff for host self-reexec
 - generic JSON-to-porcelain rendering support
-- first retrofit of `fidget_spinner` onto the shared kernel and render doctrine
+- projection traits and derive macros for concise/full model-facing surfaces
+- shared testkit assertions for projection doctrine
 
 `1.1.0` does not claim the final runtime-adapter release.
 The deeper client/server infra lift and any runtime adapter crates remain
 future work.
 
-## Immediate Implementation Sequence
-
-1. Create the library workspace and migrate the design note into this spec.
-2. Implement the MVP core:
-   - replay contracts
-   - fault taxonomy
-   - request identity and JSON-RPC helpers
-   - health and telemetry base types
-   - telemetry log support
-   - render and normalization helpers
-3. Port `adequate_rust_mcp` onto the shared pieces and stabilize.
-4. Lock `libmcp` to `1.0.0`.
-5. Revisit deeper runtime lifting only after the first consumer is truly clean.
+Patch releases may tighten validation, improve helper ergonomics, add testkit
+assertions, or clarify doctrine without changing the public topology contract.

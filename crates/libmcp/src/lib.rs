@@ -26,7 +26,7 @@ pub use host::{
     synthesized_initialized_notification, write_snapshot_file,
 };
 pub use jsonrpc::{
-    FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind, ToolCallMeta,
+    FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolCallMeta, ToolName,
     parse_tool_call_meta, read_frame, write_frame,
 };
 pub use normalize::{
@@ -35,7 +35,8 @@ pub use normalize::{
 };
 pub use projection::{
     FallbackJsonProjection, ProjectionError, ProjectionPolicy, SelectorProjection, SelectorRef,
-    StructuredProjection, SurfaceKind, SurfacePolicy, TimestampText, ToolProjection,
+    StructuredProjection, SurfaceKind, SurfacePolicy, SurfacePorcelainBounds, TimestampText,
+    ToolProjection,
 };
 pub use render::{
     DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,

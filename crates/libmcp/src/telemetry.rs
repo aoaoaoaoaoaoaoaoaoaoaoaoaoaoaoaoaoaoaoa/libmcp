@@ -1,7 +1,7 @@
 //! Append-only JSONL telemetry support.
 
 use crate::{
-    jsonrpc::{RequestId, ToolCallMeta},
+    jsonrpc::{RequestId, RpcMethod, ToolCallMeta},
     render::render_path,
 };
 use serde::Serialize;
@@ -130,8 +130,12 @@ impl TelemetryLog {
             ts_unix_ms: now,
             repo_root: self.repo_root.clone(),
             request_id,
-            tool_name: tool_meta.tool_name.clone(),
-            lsp_method: tool_meta.lsp_method.clone(),
+            tool_name: tool_meta.tool_name.as_str().to_owned(),
+            lsp_method: tool_meta
+                .lsp_method
+                .as_ref()
+                .map(RpcMethod::as_str)
+                .map(str::to_owned),
             path_hint: tool_meta.path_hint.clone(),
             latency_ms,
             replay_attempts,
@@ -240,7 +244,7 @@ fn unix_ms_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{TelemetryLog, ToolErrorDetail, ToolOutcome};
-    use crate::jsonrpc::{RequestId, ToolCallMeta};
+    use crate::jsonrpc::{RequestId, ToolCallMeta, ToolName};
     use serde_json::Value;
     use std::fs;
     use tempfile::tempdir;
@@ -260,10 +264,16 @@ mod tests {
             Ok(value) => value,
             Err(_) => return,
         };
+        let tool_name = ToolName::try_new("hover");
+        assert!(tool_name.is_ok());
+        let tool_name = match tool_name {
+            Ok(value) => value,
+            Err(_) => return,
+        };
         let record = log.record_tool_completion(
             &RequestId::Text("abc".to_owned()),
             &ToolCallMeta {
-                tool_name: "hover".to_owned(),
+                tool_name,
                 lsp_method: None,
                 path_hint: Some("/tmp/example.rs".to_owned()),
             },

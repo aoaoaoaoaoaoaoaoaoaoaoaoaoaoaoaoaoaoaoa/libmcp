@@ -55,6 +55,8 @@ Retrofitting order:
 - replace pretty-printed JSON with intentional text renderers; use compact
   table renderers for rows and reserve JSON-shaped porcelain for cases where no
   flatter representation is honest
+- prefer `libmcp` projection traits, derive macros, and generic porcelain
+  fallback before inventing consumer-local presentation glue
 - make `render` and `detail=concise|full` real before adding extra verbosity
   knobs
 - add rollout, telemetry, and recovery tests before claiming stability
