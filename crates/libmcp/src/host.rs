@@ -487,7 +487,7 @@ impl HostSessionKernel {
     pub fn observe_client_frame(&mut self, frame: &FramedMessage) -> Result<(), HostRejection> {
         match frame.classify() {
             RpcEnvelopeKind::Request { id, method } if method.is_initialize() => {
-                if self.session_phase != SessionPhase::Cold {
+                if self.session_phase != SessionPhase::Cold || self.initialization_seed.is_some() {
                     return Err(HostRejection::InvalidExecutionState);
                 }
                 self.initialization_seed = Some(InitializationSeed {
@@ -642,7 +642,10 @@ impl HostSessionKernel {
                 seed.initialize_request.id == id
                     && seed.initialize_request.payload.as_slice() == frame.payload()
             });
-            if !seed_matches {
+            if self.initialization_seed.is_some() && !seed_matches {
+                return Err(HostRejection::InvalidExecutionState);
+            }
+            if self.initialization_seed.is_none() {
                 self.initialization_seed = Some(InitializationSeed {
                     initialize_request: SeededInitializeRequest {
                         id: id.clone(),
@@ -1711,16 +1714,29 @@ mod tests {
         let initialized = FramedMessage::parse(
             br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#.to_vec(),
         );
+        let divergent_initialize = FramedMessage::parse(
+            br#"{"jsonrpc":"2.0","id":42,"method":"initialize","params":{}}"#.to_vec(),
+        );
         let Some(response) = success_response(41) else {
             return;
         };
-        let (Ok(initialize), Ok(initialized)) = (initialize, initialized) else {
+        let (Ok(initialize), Ok(initialized), Ok(divergent_initialize)) =
+            (initialize, initialized, divergent_initialize)
+        else {
             return;
         };
         let mut kernel = HostSessionKernel::cold();
 
         assert!(kernel.observe_client_frame(&initialize).is_ok());
         assert_eq!(kernel.session_phase(), SessionPhase::Cold);
+        assert_eq!(
+            kernel.observe_client_frame(&initialize),
+            Err(HostRejection::InvalidExecutionState)
+        );
+        assert_eq!(
+            kernel.begin_request_dispatch(&divergent_initialize, ReplayContract::Convergent, 1,),
+            Err(HostRejection::InvalidExecutionState)
+        );
         assert!(
             kernel
                 .begin_request_dispatch(&initialize, ReplayContract::Convergent, 1)
