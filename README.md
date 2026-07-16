@@ -19,7 +19,11 @@ operational doctrine, but it is not part of the runtime crate API.
 
 ## Status
 
-`libmcp` `1.1.0` is a library release. It contains the public crates
+`libmcp` is developing the machine-grade `2.0` contract defined in
+`docs/spec.md`. The workspace currently identifies itself as `2.0.0-alpha.1`
+until every normative guarantee has executable conformance evidence.
+
+The last published release is `1.1.0`. The public workspace contains
 `libmcp`, `libmcp-derive`, and `libmcp-testkit`.
 
 This release does not prescribe a single worker transport or ship runtime

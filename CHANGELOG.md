@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+The workspace is now on the `2.0.0-alpha.1` development line. The next release
+will enforce the machine-grade continuity and presentation contracts in
+`docs/spec.md` before declaring stability.
+
 ## 1.1.0
 
 Additive release on top of the locked `1.0.0` foundation.
