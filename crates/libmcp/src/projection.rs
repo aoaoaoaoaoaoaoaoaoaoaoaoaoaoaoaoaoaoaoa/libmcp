@@ -176,20 +176,11 @@ pub trait SelectorProjection {
     fn selector_ref(&self) -> SelectorRef;
 }
 
-/// Type-level surface doctrine.
+/// Materialized doctrine for one model-facing surface.
 pub trait SurfacePolicy {
-    /// Declared surface kind.
-    const KIND: SurfaceKind;
-    /// Whether opaque database identifiers are forbidden by doctrine.
-    const FORBID_OPAQUE_IDS: bool = true;
-    /// Whether the surface is reference-only.
-    const REFERENCE_ONLY: bool = false;
-
     /// Materializes the policy.
     #[must_use]
-    fn projection_policy(&self) -> ProjectionPolicy {
-        ProjectionPolicy::from_surface(Self::KIND, Self::FORBID_OPAQUE_IDS, Self::REFERENCE_ONLY)
-    }
+    fn projection_policy(&self) -> ProjectionPolicy;
 }
 
 /// Structured concise/full projections.
@@ -336,8 +327,6 @@ impl StructuredProjection for FallbackJsonProjection {
 }
 
 impl SurfacePolicy for FallbackJsonProjection {
-    const KIND: SurfaceKind = SurfaceKind::Read;
-
     fn projection_policy(&self) -> ProjectionPolicy {
         ProjectionPolicy::from_surface(self.kind, self.forbid_opaque_ids, self.reference_only)
     }
@@ -383,7 +372,7 @@ mod tests {
             analysis: "Native LP spends most traced wallclock in node reoptimization.".to_owned(),
         };
 
-        assert_eq!(ExperimentProjection::KIND, SurfaceKind::Read);
+        assert_eq!(projection.projection_policy().kind, SurfaceKind::Read);
 
         let concise = projection.concise_projection();
         assert!(concise.is_ok());

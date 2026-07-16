@@ -108,9 +108,13 @@ fn expand_tool_projection(input: DeriveInput) -> Result<proc_macro2::TokenStream
         }
 
         impl #impl_generics #libmcp::SurfacePolicy for #ident #ty_generics #where_clause {
-            const KIND: #libmcp::SurfaceKind = #kind;
-            const FORBID_OPAQUE_IDS: bool = #forbid_opaque_ids;
-            const REFERENCE_ONLY: bool = #reference_only;
+            fn projection_policy(&self) -> #libmcp::ProjectionPolicy {
+                #libmcp::ProjectionPolicy::from_surface(
+                    #kind,
+                    #forbid_opaque_ids,
+                    #reference_only,
+                )
+            }
         }
     })
 }
