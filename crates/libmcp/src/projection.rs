@@ -9,54 +9,24 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const OVERVIEW_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig {
-        max_lines: 10,
-        max_inline_chars: 144,
-    },
-    full: JsonPorcelainConfig {
-        max_lines: 28,
-        max_inline_chars: 240,
-    },
+    concise: JsonPorcelainConfig::fixed(10, 144),
+    full: JsonPorcelainConfig::fixed(28, 240),
 };
 const LIST_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig {
-        max_lines: 16,
-        max_inline_chars: 128,
-    },
-    full: JsonPorcelainConfig {
-        max_lines: 32,
-        max_inline_chars: 176,
-    },
+    concise: JsonPorcelainConfig::fixed(16, 128),
+    full: JsonPorcelainConfig::fixed(32, 176),
 };
 const READ_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig {
-        max_lines: 18,
-        max_inline_chars: 176,
-    },
-    full: JsonPorcelainConfig {
-        max_lines: 40,
-        max_inline_chars: 320,
-    },
+    concise: JsonPorcelainConfig::fixed(18, 176),
+    full: JsonPorcelainConfig::fixed(40, 320),
 };
 const MUTATION_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig {
-        max_lines: 12,
-        max_inline_chars: 160,
-    },
-    full: JsonPorcelainConfig {
-        max_lines: 24,
-        max_inline_chars: 256,
-    },
+    concise: JsonPorcelainConfig::fixed(12, 160),
+    full: JsonPorcelainConfig::fixed(24, 256),
 };
 const OPS_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig {
-        max_lines: 8,
-        max_inline_chars: 160,
-    },
-    full: JsonPorcelainConfig {
-        max_lines: 24,
-        max_inline_chars: 240,
-    },
+    concise: JsonPorcelainConfig::fixed(8, 160),
+    full: JsonPorcelainConfig::fixed(24, 240),
 };
 
 /// Projection failure.
