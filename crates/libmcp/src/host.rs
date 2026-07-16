@@ -18,13 +18,17 @@ use std::{
     time::{Duration, Instant as StdInstant, SystemTime, UNIX_EPOCH},
 };
 
-/// Session readiness for worker replay purposes.
+/// Public MCP initialization phase, independent of worker readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionPhase {
-    /// No successful `initialize` has been forwarded yet.
+    /// No initialize request is active.
     Cold,
-    /// The public session is live and must be reseeded after worker churn.
+    /// The public initialize request is in flight.
+    Initializing,
+    /// Initialize succeeded; the client notification has not yet arrived.
+    AwaitingInitialized,
+    /// The client completed the public initialization handshake.
     Live,
 }
 
@@ -362,37 +366,42 @@ impl HostSessionKernel {
         self.initialization_seed.as_ref()
     }
 
-    /// Returns the worker replay seed, synthesizing `initialized` if needed.
-    #[must_use]
-    pub fn replay_seed(&self) -> Option<InitializationSeed> {
+    /// Returns the exact worker replay seed for an established public session.
+    pub fn replay_seed(&self) -> Result<Option<InitializationSeed>, HostRejection> {
         prepare_replay_seed(self.session_phase, self.initialization_seed.as_ref())
     }
 
     /// Observes a client frame before it is forwarded or queued.
-    pub fn observe_client_frame(&mut self, frame: &FramedMessage) {
+    pub fn observe_client_frame(&mut self, frame: &FramedMessage) -> Result<(), HostRejection> {
         match frame.classify() {
             RpcEnvelopeKind::Request { id, method } if method.is_initialize() => {
-                let prior_initialized = self
-                    .initialization_seed
-                    .as_ref()
-                    .and_then(|seed| seed.initialized_notification.clone());
+                if self.session_phase != SessionPhase::Cold {
+                    return Err(HostRejection::InvalidExecutionState);
+                }
                 self.initialization_seed = Some(InitializationSeed {
                     initialize_request: SeededInitializeRequest {
                         id,
                         payload: frame.payload().to_vec(),
                     },
-                    initialized_notification: prior_initialized,
+                    initialized_notification: None,
                 });
             }
             RpcEnvelopeKind::Notification { method } if method.is_initialized_notification() => {
-                if let Some(seed) = self.initialization_seed.as_mut() {
-                    seed.initialized_notification = Some(frame.payload().to_vec());
+                if self.session_phase != SessionPhase::AwaitingInitialized {
+                    return Err(HostRejection::InvalidExecutionState);
                 }
+                let seed = self
+                    .initialization_seed
+                    .as_mut()
+                    .ok_or(HostRejection::InvalidExecutionState)?;
+                seed.initialized_notification = Some(frame.payload().to_vec());
+                self.session_phase = SessionPhase::Live;
             }
             RpcEnvelopeKind::Request { .. }
             | RpcEnvelopeKind::Notification { .. }
             | RpcEnvelopeKind::Response { .. } => {}
         }
+        Ok(())
     }
 
     /// Queues a client frame while no ready worker is available.
@@ -492,10 +501,29 @@ impl HostSessionKernel {
             return Err(HostRejection::PendingCapacityExhausted);
         }
         let sequence = self.next_pending_sequence;
-        self.next_pending_sequence = self
-            .next_pending_sequence
+        let next_pending_sequence = sequence
             .checked_add(1)
             .ok_or(HostRejection::InvalidExecutionState)?;
+        if method.is_initialize() {
+            if self.session_phase != SessionPhase::Cold {
+                return Err(HostRejection::InvalidExecutionState);
+            }
+            let seed_matches = self.initialization_seed.as_ref().is_some_and(|seed| {
+                seed.initialize_request.id == id
+                    && seed.initialize_request.payload.as_slice() == frame.payload()
+            });
+            if !seed_matches {
+                self.initialization_seed = Some(InitializationSeed {
+                    initialize_request: SeededInitializeRequest {
+                        id: id.clone(),
+                        payload: frame.payload().to_vec(),
+                    },
+                    initialized_notification: None,
+                });
+            }
+            self.session_phase = SessionPhase::Initializing;
+        }
+        self.next_pending_sequence = next_pending_sequence;
         let request = PendingRequest {
             tool_call_meta: parse_tool_call_meta(frame, &method),
             method,
@@ -511,25 +539,42 @@ impl HostSessionKernel {
         Ok(id)
     }
 
-    /// Records and removes the single terminal outcome for an invocation.
-    pub fn complete_request(
+    /// Records and removes one exact terminal JSON-RPC response.
+    pub fn complete_response(
         &mut self,
-        request_id: &RequestId,
+        response: &FramedMessage,
     ) -> Result<CompletedPendingRequest, HostRejection> {
+        let RpcEnvelopeKind::Response { id, has_error } = response.classify() else {
+            return Err(HostRejection::InvalidRequestFrame);
+        };
+        let request_id = &id;
         let pending = self
             .pending
-            .get_mut(request_id)
+            .get(request_id)
             .ok_or(HostRejection::RequestNotPending)?;
-        pending.execution_knowledge = pending
+        let completed_knowledge = pending
             .execution_knowledge
             .after_terminal_outcome()
             .map_err(|_| HostRejection::InvalidExecutionState)?;
+        if pending.method.is_initialize() && self.session_phase != SessionPhase::Initializing {
+            return Err(HostRejection::InvalidExecutionState);
+        }
+        let pending = self
+            .pending
+            .get_mut(request_id)
+            .ok_or(HostRejection::InvalidExecutionState)?;
+        pending.execution_knowledge = completed_knowledge;
         let request = self
             .pending
             .remove(request_id)
             .ok_or(HostRejection::InvalidExecutionState)?;
         if request.method.is_initialize() {
-            self.session_phase = SessionPhase::Live;
+            if has_error {
+                self.session_phase = SessionPhase::Cold;
+                self.initialization_seed = None;
+            } else {
+                self.session_phase = SessionPhase::AwaitingInitialized;
+            }
         }
         self.remove_queued_request(request_id);
         let replay_attempts = request.replay_attempts;
@@ -768,26 +813,23 @@ impl HostSessionKernelSnapshot {
     }
 }
 
-/// Returns the synthesized initialized notification used when only the request seed survived.
-#[must_use]
-pub fn synthesized_initialized_notification() -> Vec<u8> {
-    br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#.to_vec()
-}
-
 /// Prepares a replay seed based on the current session phase.
-#[must_use]
 pub fn prepare_replay_seed(
     session_phase: SessionPhase,
     initialization_seed: Option<&InitializationSeed>,
-) -> Option<InitializationSeed> {
+) -> Result<Option<InitializationSeed>, HostRejection> {
     match session_phase {
-        SessionPhase::Cold => None,
-        SessionPhase::Live => initialization_seed.cloned().map(|mut seed| {
-            if seed.initialized_notification.is_none() {
-                seed.initialized_notification = Some(synthesized_initialized_notification());
-            }
-            seed
-        }),
+        SessionPhase::Cold | SessionPhase::Initializing => Ok(None),
+        SessionPhase::AwaitingInitialized => initialization_seed
+            .filter(|seed| seed.initialized_notification.is_none())
+            .cloned()
+            .map(Some)
+            .ok_or(HostRejection::InvalidExecutionState),
+        SessionPhase::Live => initialization_seed
+            .filter(|seed| seed.initialized_notification.is_some())
+            .cloned()
+            .map(Some)
+            .ok_or(HostRejection::InvalidExecutionState),
     }
 }
 
@@ -862,14 +904,14 @@ mod tests {
         DispatchQueueOutcome, FramedMessage, HostRejection, HostSessionKernel,
         HostSessionKernelSnapshot, InitializationSeed, PendingRequest, ProbeResolutionOutcome,
         ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest, SessionPhase,
-        prepare_replay_seed, synthesized_initialized_notification,
+        prepare_replay_seed,
     };
     use crate::{ExecutionKnowledge, ProbeResolution, ReplayContract};
     use serde_json::json;
 
     #[test]
-    fn prepare_replay_seed_synthesizes_initialized_notification_when_missing() {
-        let seed = InitializationSeed {
+    fn replay_seed_preserves_the_exact_public_handshake() {
+        let mut seed = InitializationSeed {
             initialize_request: SeededInitializeRequest {
                 id: RequestId::number(1),
                 payload: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_vec(),
@@ -877,15 +919,28 @@ mod tests {
             initialized_notification: None,
         };
 
-        let prepared = prepare_replay_seed(SessionPhase::Live, Some(&seed));
-        assert!(prepared.is_some(), "expected live session replay seed");
-        let prepared = match prepared {
-            Some(value) => value,
-            None => return,
-        };
         assert_eq!(
-            prepared.initialized_notification,
-            Some(synthesized_initialized_notification())
+            prepare_replay_seed(SessionPhase::Cold, Some(&seed)),
+            Ok(None)
+        );
+        assert!(matches!(
+            prepare_replay_seed(SessionPhase::AwaitingInitialized, Some(&seed)),
+            Ok(Some(prepared)) if prepared.initialized_notification.is_none()
+        ));
+        assert_eq!(
+            prepare_replay_seed(SessionPhase::Live, Some(&seed)),
+            Err(HostRejection::InvalidExecutionState)
+        );
+
+        seed.initialized_notification =
+            Some(br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#.to_vec());
+        assert!(matches!(
+            prepare_replay_seed(SessionPhase::Live, Some(&seed)),
+            Ok(Some(prepared)) if prepared == seed
+        ));
+        assert_eq!(
+            prepare_replay_seed(SessionPhase::AwaitingInitialized, Some(&seed)),
+            Err(HostRejection::InvalidExecutionState)
         );
     }
 
@@ -931,7 +986,10 @@ mod tests {
                     payload: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
                         .to_vec(),
                 },
-                initialized_notification: None,
+                initialized_notification: Some(
+                    br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#
+                        .to_vec(),
+                ),
             }),
             pending: vec![super::PendingRequestSnapshot {
                 request_id: RequestId::number(7),
@@ -1040,15 +1098,59 @@ mod tests {
             Err(HostRejection::PendingCapacityExhausted)
         );
 
-        assert!(kernel.complete_request(&RequestId::number(11)).is_ok());
+        let Some(first_response) = success_response(11) else {
+            return;
+        };
+        assert!(kernel.complete_response(&first_response).is_ok());
         assert!(matches!(
-            kernel.complete_request(&RequestId::number(11)),
+            kernel.complete_response(&first_response),
             Err(HostRejection::RequestNotPending)
         ));
         assert!(
             kernel
                 .begin_request_dispatch(&first, ReplayContract::Convergent, 1)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn public_initialization_advances_only_on_observed_protocol_events() {
+        let initialize = FramedMessage::parse(
+            br#"{"jsonrpc":"2.0","id":41,"method":"initialize","params":{}}"#.to_vec(),
+        );
+        let initialized = FramedMessage::parse(
+            br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#.to_vec(),
+        );
+        let Some(response) = success_response(41) else {
+            return;
+        };
+        let (Ok(initialize), Ok(initialized)) = (initialize, initialized) else {
+            return;
+        };
+        let mut kernel = HostSessionKernel::cold();
+
+        assert!(kernel.observe_client_frame(&initialize).is_ok());
+        assert_eq!(kernel.session_phase(), SessionPhase::Cold);
+        assert!(
+            kernel
+                .begin_request_dispatch(&initialize, ReplayContract::Convergent, 1)
+                .is_ok()
+        );
+        assert_eq!(kernel.session_phase(), SessionPhase::Initializing);
+        assert_eq!(
+            kernel.observe_client_frame(&initialized),
+            Err(HostRejection::InvalidExecutionState)
+        );
+        assert!(kernel.complete_response(&response).is_ok());
+        assert_eq!(kernel.session_phase(), SessionPhase::AwaitingInitialized);
+        assert!(
+            matches!(kernel.replay_seed(), Ok(Some(seed)) if seed.initialized_notification.is_none())
+        );
+
+        assert!(kernel.observe_client_frame(&initialized).is_ok());
+        assert_eq!(kernel.session_phase(), SessionPhase::Live);
+        assert!(
+            matches!(kernel.replay_seed(), Ok(Some(seed)) if seed.initialized_notification.as_deref() == Some(initialized.payload()))
         );
     }
 
@@ -1174,10 +1276,13 @@ mod tests {
         });
         assert!(second_loss.rejected.is_empty());
         assert!(!kernel.queue_is_empty());
-        assert!(kernel.complete_request(&RequestId::number(32)).is_ok());
+        let Some(response) = success_response(32) else {
+            return;
+        };
+        assert!(kernel.complete_response(&response).is_ok());
         assert!(kernel.queue_is_empty());
         assert!(matches!(
-            kernel.complete_request(&RequestId::number(32)),
+            kernel.complete_response(&response),
             Err(HostRejection::RequestNotPending)
         ));
     }
@@ -1188,6 +1293,16 @@ mod tests {
             "id": id,
             "method": "tools/call",
             "params": {"name": name, "arguments": {}}
+        }))
+        .ok()?;
+        FramedMessage::parse(payload).ok()
+    }
+
+    fn success_response(id: u64) -> Option<FramedMessage> {
+        let payload = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {}
         }))
         .ok()?;
         FramedMessage::parse(payload).ok()
