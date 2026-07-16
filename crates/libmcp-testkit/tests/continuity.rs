@@ -109,6 +109,68 @@ fn downstream_kernel_rejects_duplicate_and_double_terminal_ids() -> Result<(), B
 }
 
 #[test]
+fn downstream_worker_loss_respects_pre_and_post_dispatch_boundaries() -> Result<(), Box<dyn Error>>
+{
+    let queued = request(15, "queued")?;
+    let completed = request(16, "completed")?;
+    let completed_response = response(16)?;
+    let mut kernel = HostSessionKernel::cold();
+    kernel.queue_client_frame(queued.clone(), 4)?;
+    let recovery = kernel.requeue_pending_for_replay(ReplayBudget {
+        max_attempts: 1,
+        queue_capacity: 4,
+    });
+    assert!(recovery.rejected.is_empty());
+    let dequeued = kernel.pop_next_dispatch()?;
+    assert!(matches!(
+        dequeued,
+        DispatchQueueOutcome::ClientFrame(ref frame) if frame.payload() == queued.payload()
+    ));
+    assert!(kernel.pending_is_empty());
+    let _id = kernel.begin_request_dispatch(&queued, ReplayContract::NeverReplay, 4)?;
+
+    let mut completed_kernel = HostSessionKernel::cold();
+    let _id = completed_kernel.begin_request_dispatch(&completed, ReplayContract::Convergent, 4)?;
+    let _completed = completed_kernel.complete_response(&completed_response)?;
+    let recovery = completed_kernel.requeue_pending_for_replay(ReplayBudget {
+        max_attempts: 1,
+        queue_capacity: 4,
+    });
+    assert!(recovery.rejected.is_empty());
+    assert!(completed_kernel.pending_is_empty());
+    assert!(matches!(
+        completed_kernel.pop_next_dispatch()?,
+        DispatchQueueOutcome::Empty
+    ));
+    Ok(())
+}
+
+#[test]
+fn downstream_recovery_capacity_rejects_without_overwrite() -> Result<(), Box<dyn Error>> {
+    let first = request(17, "first")?;
+    let second = request(18, "second")?;
+    let mut kernel = HostSessionKernel::cold();
+    let _id = kernel.begin_request_dispatch(&first, ReplayContract::Convergent, 2)?;
+    let _id = kernel.begin_request_dispatch(&second, ReplayContract::Convergent, 2)?;
+    let recovery = kernel.requeue_pending_for_replay(ReplayBudget {
+        max_attempts: 1,
+        queue_capacity: 1,
+    });
+    assert!(matches!(
+        recovery.rejected.as_slice(),
+        [rejected] if rejected.request_id == RequestId::number(18)
+            && rejected.reason == HostRejection::QueueOverflow
+    ));
+    assert_eq!(kernel.pending_len(), 1);
+    assert!(matches!(
+        kernel.pop_next_dispatch()?,
+        DispatchQueueOutcome::Replay(frame)
+            if request_id(&frame).as_ref() == Some(&RequestId::number(17))
+    ));
+    Ok(())
+}
+
+#[test]
 fn downstream_snapshot_roundtrip_preserves_recovery_and_rejects_versions()
 -> Result<(), Box<dyn Error>> {
     let request = request(21, "snapshot")?;
