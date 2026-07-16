@@ -1,0 +1,5 @@
+error: unsupported libmcp field attribute
+ --> tests/ui/fail/unknown_field_attribute.rs:5:14
+  |
+5 |     #[libmcp(full_ony)]
+  |              ^^^^^^^^

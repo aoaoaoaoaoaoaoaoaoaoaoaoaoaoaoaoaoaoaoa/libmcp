@@ -1,0 +1,6 @@
+error: only one field may be marked selector
+ --> tests/ui/fail/duplicate_selector.rs:7:5
+  |
+7 | /     #[libmcp(selector)]
+8 | |     second: String,
+  | |__________________^

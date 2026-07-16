@@ -2,6 +2,13 @@
 
 extern crate self as libmcp;
 
+/// Implementation details used by `libmcp` derive expansions.
+#[doc(hidden)]
+pub mod __macro {
+    pub use serde;
+    pub use serde_json;
+}
+
 pub mod fault;
 pub mod health;
 pub mod host;

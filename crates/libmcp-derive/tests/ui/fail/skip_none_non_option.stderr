@@ -1,0 +1,5 @@
+error: skip_none requires an Option field
+ --> tests/ui/fail/skip_none_non_option.rs:6:12
+  |
+6 |     value: String,
+  |            ^^^^^^

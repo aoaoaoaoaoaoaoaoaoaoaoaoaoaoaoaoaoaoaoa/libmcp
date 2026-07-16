@@ -1,0 +1,6 @@
+error: full_only and concise_only are mutually exclusive
+ --> tests/ui/fail/conflicting_detail.rs:5:5
+  |
+5 | /     #[libmcp(full_only, concise_only)]
+6 | |     value: String,
+  | |_________________^

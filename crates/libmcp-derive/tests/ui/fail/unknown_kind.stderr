@@ -1,0 +1,5 @@
+error: kind must be overview, list, read, mutation, or ops
+ --> tests/ui/fail/unknown_kind.rs:4:17
+  |
+4 | #[libmcp(kind = "transcendental")]
+  |                 ^^^^^^^^^^^^^^^^
