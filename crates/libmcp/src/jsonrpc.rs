@@ -54,7 +54,7 @@ impl RequestId {
 }
 
 /// JSON-RPC method token.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RpcMethod(String);
 

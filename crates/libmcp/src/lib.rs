@@ -22,8 +22,8 @@ pub mod types;
 
 pub use fault::{Fault, FaultClass, FaultCode, RecoveryDirective};
 pub use health::{
-    HealthSnapshot, LifecycleState, MethodTelemetry, RolloutState, TelemetrySnapshot,
-    TelemetryTotals,
+    HealthSnapshot, LifecycleState, MethodTelemetry, OperationalLedger, OperationalMetricError,
+    RolloutState, TelemetrySnapshot, TelemetryTotals, WorkerHandshakePhase,
 };
 pub use host::{
     CompletedPendingRequest, DispatchQueueOutcome, HostRejection, HostSessionKernel,
