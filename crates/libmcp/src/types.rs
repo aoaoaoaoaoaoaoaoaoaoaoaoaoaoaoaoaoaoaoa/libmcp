@@ -40,11 +40,53 @@ impl Generation {
         self.0.get()
     }
 
-    /// Advances to the next generation, saturating on overflow.
-    #[must_use]
-    pub fn next(self) -> Self {
-        let next = self.get().saturating_add(1);
-        let non_zero = NonZeroU64::new(next).map_or(NonZeroU64::MAX, |value| value);
-        Self(non_zero)
+    /// Constructs a generation from its non-zero wire value.
+    pub fn try_new(generation: u64) -> Result<Self, InvariantViolation> {
+        NonZeroU64::new(generation)
+            .map(Self)
+            .ok_or_else(|| InvariantViolation::new("worker generation must be non-zero"))
+    }
+
+    /// Advances to the next generation.
+    ///
+    /// Exhausting the identifier space is an invariant failure; it must not
+    /// silently reuse the active generation.
+    pub fn next(self) -> Result<Self, InvariantViolation> {
+        self.get()
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .map(Self)
+            .ok_or_else(|| InvariantViolation::new("worker generation exhausted u64"))
+    }
+}
+
+impl TryFrom<u64> for Generation {
+    type Error = InvariantViolation;
+
+    fn try_from(generation: u64) -> Result<Self, Self::Error> {
+        Self::try_new(generation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Generation;
+
+    #[test]
+    fn generation_rejects_zero_and_overflow() {
+        assert!(Generation::try_new(0).is_err());
+        assert_eq!(Generation::try_new(7).map(Generation::get), Ok(7));
+        assert!(
+            Generation::try_new(u64::MAX)
+                .and_then(Generation::next)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn generation_deserialization_preserves_non_zero_invariant() {
+        assert!(serde_json::from_str::<Generation>("0").is_err());
+        let generation = serde_json::from_str::<Generation>("9");
+        assert!(matches!(generation, Ok(value) if value.get() == 9));
     }
 }

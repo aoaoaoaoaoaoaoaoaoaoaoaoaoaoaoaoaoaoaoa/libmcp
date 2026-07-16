@@ -3,27 +3,40 @@
 use crate::normalize::normalize_ascii_token;
 use crate::types::InvariantViolation;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize, de};
+use serde_json::{Number, Value};
 use std::{fmt, io};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use url::Url;
 
 /// JSON-RPC request identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
 pub enum RequestId {
-    /// Numeric identifier preserved as text for round-trip stability.
-    Number(String),
+    /// Numeric identifier.
+    Number(Number),
     /// Text identifier.
     Text(String),
 }
 
 impl RequestId {
+    /// Constructs a numeric request ID.
+    #[must_use]
+    pub fn number(number: impl Into<Number>) -> Self {
+        Self::Number(number.into())
+    }
+
+    /// Constructs a textual request ID.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(text.into())
+    }
+
     /// Parses a request ID from JSON.
     #[must_use]
     pub fn from_json_value(value: &Value) -> Option<Self> {
         match value {
-            Value::Number(number) => Some(Self::Number(number.to_string())),
+            Value::Number(number) => Some(Self::Number(number.clone())),
             Value::String(text) => Some(Self::Text(text.clone())),
             Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
         }
@@ -33,20 +46,14 @@ impl RequestId {
     #[must_use]
     pub fn to_json_value(&self) -> Value {
         match self {
-            Self::Number(number) => {
-                let parsed = serde_json::from_str::<Value>(number);
-                match parsed {
-                    Ok(value @ Value::Number(_)) => value,
-                    Ok(_) | Err(_) => Value::String(number.clone()),
-                }
-            }
+            Self::Number(number) => Value::Number(number.clone()),
             Self::Text(text) => Value::String(text.clone()),
         }
     }
 }
 
 /// JSON-RPC method token.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RpcMethod(String);
 
@@ -115,8 +122,18 @@ impl fmt::Display for RpcMethod {
     }
 }
 
+impl<'de> Deserialize<'de> for RpcMethod {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let method = String::deserialize(deserializer)?;
+        Self::try_new(method).map_err(de::Error::custom)
+    }
+}
+
 /// MCP tool name token.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ToolName(String);
 
@@ -150,6 +167,16 @@ impl ToolName {
 impl fmt::Display for ToolName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        Self::try_new(name).map_err(de::Error::custom)
     }
 }
 
@@ -385,18 +412,24 @@ mod tests {
     use super::{
         FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolName, parse_tool_call_meta,
     };
-    use serde_json::json;
+    use serde_json::{Number, json};
 
     #[test]
     fn request_id_round_trips_numeric_and_textual_values() {
         let numeric = RequestId::from_json_value(&json!(42));
-        assert!(matches!(numeric, Some(RequestId::Number(ref value)) if value == "42"));
+        assert!(
+            matches!(numeric, Some(RequestId::Number(ref value)) if value == &Number::from(42))
+        );
 
         let textual = RequestId::from_json_value(&json!("abc"));
         assert!(matches!(textual, Some(RequestId::Text(ref value)) if value == "abc"));
 
         let round_trip = numeric.map(|value| value.to_json_value());
         assert_eq!(round_trip, Some(json!(42)));
+        let serialized = serde_json::to_value(RequestId::number(42));
+        assert!(matches!(serialized, Ok(value) if value == json!(42)));
+        let deserialized = serde_json::from_value::<RequestId>(json!("abc"));
+        assert!(matches!(deserialized, Ok(value) if value == RequestId::text("abc")));
     }
 
     #[test]
@@ -405,6 +438,8 @@ mod tests {
         assert!(RpcMethod::try_new("").is_err());
         assert!(ToolName::try_new("hover").is_ok());
         assert!(ToolName::try_new(" ").is_err());
+        assert!(serde_json::from_str::<RpcMethod>(r#""""#).is_err());
+        assert!(serde_json::from_str::<ToolName>(r#"" ""#).is_err());
     }
 
     #[test]

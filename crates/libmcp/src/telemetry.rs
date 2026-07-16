@@ -271,7 +271,7 @@ mod tests {
             Err(_) => return,
         };
         let record = log.record_tool_completion(
-            &RequestId::Text("abc".to_owned()),
+            &RequestId::text("abc"),
             &ToolCallMeta {
                 tool_name,
                 lsp_method: None,

@@ -616,7 +616,7 @@ mod tests {
     fn prepare_replay_seed_synthesizes_initialized_notification_when_missing() {
         let seed = InitializationSeed {
             initialize_request: SeededInitializeRequest {
-                id: RequestId::Number("1".to_owned()),
+                id: RequestId::number(1),
                 payload: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_vec(),
             },
             initialized_notification: None,
@@ -672,14 +672,14 @@ mod tests {
             session_phase: SessionPhase::Live,
             initialization_seed: Some(InitializationSeed {
                 initialize_request: SeededInitializeRequest {
-                    id: RequestId::Number("1".to_owned()),
+                    id: RequestId::number(1),
                     payload: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
                         .to_vec(),
                 },
                 initialized_notification: None,
             }),
             pending: vec![super::PendingRequestSnapshot {
-                request_id: RequestId::Number("7".to_owned()),
+                request_id: RequestId::number(7),
                 method: RpcMethod::tools_call(),
                 sequence: 3,
                 frame: pending_payload,
@@ -687,7 +687,7 @@ mod tests {
                 age_ms: 25,
             }],
             replay_attempts: vec![super::ReplayAttemptSnapshot {
-                request_id: RequestId::Number("7".to_owned()),
+                request_id: RequestId::number(7),
                 attempts: 2,
             }],
             queued_frames: vec![queued_payload],
@@ -709,13 +709,10 @@ mod tests {
         assert_eq!(restored.pending.len(), 1);
         assert_eq!(restored.queued_frames.len(), 1);
         assert_eq!(
-            restored
-                .replay_attempts
-                .get(&RequestId::Number("7".to_owned()))
-                .copied(),
+            restored.replay_attempts.get(&RequestId::number(7)).copied(),
             Some(2)
         );
-        let pending = restored.pending.get(&RequestId::Number("7".to_owned()));
+        let pending = restored.pending.get(&RequestId::number(7));
         assert!(pending.is_some(), "expected pending request to round-trip");
         let pending = match pending {
             Some(value) => value,
@@ -753,9 +750,7 @@ mod tests {
         kernel.observe_client_frame(&initialize);
         kernel.record_forwarded_request(&initialize, crate::ReplayContract::Convergent);
         kernel.record_forwarded_request(&diagnostics, crate::ReplayContract::Convergent);
-        let _previous = kernel
-            .replay_attempts
-            .insert(RequestId::Number("2".to_owned()), 1);
+        let _previous = kernel.replay_attempts.insert(RequestId::number(2), 1);
 
         let outcome = kernel.requeue_pending_for_replay(ReplayBudget {
             max_attempts: 1,

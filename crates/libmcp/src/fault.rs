@@ -2,7 +2,7 @@
 
 use crate::types::Generation;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Broad operational fault class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -41,7 +41,7 @@ pub enum RecoveryDirective {
 }
 
 /// A typed but extensible fault code.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct FaultCode(String);
 
@@ -67,6 +67,16 @@ impl FaultCode {
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for FaultCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let code = String::deserialize(deserializer)?;
+        Self::try_new(code).map_err(de::Error::custom)
     }
 }
 
@@ -114,5 +124,7 @@ mod tests {
         assert!(FaultCode::try_new("broken_pipe").is_ok());
         assert!(FaultCode::try_new("BrokenPipe").is_err());
         assert!(FaultCode::try_new("").is_err());
+        assert!(serde_json::from_str::<FaultCode>(r#""BrokenPipe""#).is_err());
+        assert!(serde_json::from_str::<FaultCode>(r#""broken_pipe""#).is_ok());
     }
 }
