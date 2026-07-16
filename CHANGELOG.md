@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1
+
+- add the missing generic terminal-error transition to `OperationalLedger`,
+  keeping host-originated failures out of downstream-response and
+  recovery-error counters
+
 ## 2.0.0
 
 Machine-grade continuity and presentation release. `docs/spec.md` is now the

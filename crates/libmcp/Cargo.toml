@@ -12,7 +12,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-libmcp-derive = { version = "2.0.0", path = "../libmcp-derive" }
+libmcp-derive = { version = "2.0.1", path = "../libmcp-derive" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -19,7 +19,7 @@ operational doctrine, but it is not part of the runtime crate API.
 
 ## Status
 
-`libmcp` `2.0.0` implements the machine-grade contract defined in
+`libmcp` `2.0` implements the machine-grade contract defined in
 `docs/spec.md`. The public workspace contains `libmcp`, `libmcp-derive`, and
 `libmcp-testkit`.
 
