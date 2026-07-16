@@ -1,0 +1,5 @@
+error: SelectorProjection requires named fields
+ --> tests/ui/fail/selector_tuple.rs:4:8
+  |
+4 | struct TupleSelector(String);
+  |        ^^^^^^^^^^^^^

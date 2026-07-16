@@ -4,6 +4,9 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Field, Fields, Ident, LitStr, Result, parse_macro_input};
 
+#[cfg(test)]
+use {libmcp as _, trybuild as _};
+
 const LIBMCP_ATTR: &str = "libmcp";
 const ATTR_KIND: &str = "kind";
 const ATTR_REFERENCE_ONLY: &str = "reference_only";
