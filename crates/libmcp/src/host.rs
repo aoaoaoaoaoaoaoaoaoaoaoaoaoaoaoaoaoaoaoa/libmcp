@@ -112,6 +112,14 @@ impl HostRejection {
     }
 }
 
+impl std::fmt::Display for HostRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for HostRejection {}
+
 /// Live pending request tracked by the host.
 #[derive(Debug, Clone)]
 pub struct PendingRequest {
@@ -543,6 +551,24 @@ impl HostSessionKernel {
     #[must_use]
     pub fn queue_is_empty(&self) -> bool {
         self.queued_frames.is_empty()
+    }
+
+    /// Returns the number of live pending invocations.
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Returns whether no invocation is pending.
+    #[must_use]
+    pub fn pending_is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Returns immutable pending invocation state by public request ID.
+    #[must_use]
+    pub fn pending_request(&self, request_id: &RequestId) -> Option<&PendingRequest> {
+        self.pending.get(request_id)
     }
 
     /// Begins first dispatch of a routed client request.

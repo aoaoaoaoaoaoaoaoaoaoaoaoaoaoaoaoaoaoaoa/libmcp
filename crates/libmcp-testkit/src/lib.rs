@@ -1,6 +1,10 @@
 //! Shared test helpers for `libmcp` consumers.
 
-use libmcp::{SurfaceKind, ToolProjection};
+use libmcp::{
+    CompletedPendingRequest, DispatchQueueOutcome, FramedMessage, HostRejection, HostSessionKernel,
+    ProbeResolution, ProbeResolutionOutcome, ReplayBudget, ReplayContract, ReplayRequeueOutcome,
+    RequestId, SurfaceKind, ToolProjection,
+};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{
@@ -13,6 +17,83 @@ const OPAQUE_ID_FIELD: &str = "id";
 const OPAQUE_ID_SUFFIX: &str = "_id";
 const LIST_BODY_FIELDS: &[&str] = &["body", "payload_preview", "analysis", "rationale"];
 const REFERENCE_BODY_FIELDS: &[&str] = &["body", "content", "text", "bytes"];
+
+/// Deterministic fake host boundary for recovery conformance tests.
+#[derive(Debug, Clone)]
+pub struct ChurnHarness {
+    kernel: HostSessionKernel,
+    dispatched: Vec<FramedMessage>,
+}
+
+impl ChurnHarness {
+    /// Creates a cold fake host.
+    #[must_use]
+    pub fn cold() -> Self {
+        Self {
+            kernel: HostSessionKernel::cold(),
+            dispatched: Vec::new(),
+        }
+    }
+
+    /// Returns the underlying kernel for precise assertions.
+    #[must_use]
+    pub const fn kernel(&self) -> &HostSessionKernel {
+        &self.kernel
+    }
+
+    /// Returns every frame that crossed the fake worker dispatch boundary.
+    #[must_use]
+    pub fn dispatched(&self) -> &[FramedMessage] {
+        &self.dispatched
+    }
+
+    /// Begins and records one first worker dispatch.
+    pub fn dispatch_first(
+        &mut self,
+        frame: &FramedMessage,
+        contract: ReplayContract,
+        pending_capacity: usize,
+    ) -> Result<RequestId, HostRejection> {
+        let id = self
+            .kernel
+            .begin_request_dispatch(frame, contract, pending_capacity)?;
+        self.dispatched.push(frame.clone());
+        Ok(id)
+    }
+
+    /// Applies worker loss and rebuilds the recovery queue.
+    pub fn kill_worker(&mut self, budget: ReplayBudget) -> ReplayRequeueOutcome {
+        self.kernel.requeue_pending_for_replay(budget)
+    }
+
+    /// Takes one recovery-ordered dispatch and records actual redispatches.
+    pub fn dispatch_next(&mut self) -> Result<DispatchQueueOutcome, HostRejection> {
+        let outcome = self.kernel.pop_next_dispatch()?;
+        if let DispatchQueueOutcome::Frame(frame) = &outcome {
+            self.dispatched.push(frame.clone());
+        }
+        Ok(outcome)
+    }
+
+    /// Supplies explicit evidence for one held probe-required invocation.
+    pub fn resolve_probe(
+        &mut self,
+        request_id: &RequestId,
+        resolution: ProbeResolution,
+        max_attempts: u8,
+    ) -> Result<ProbeResolutionOutcome, HostRejection> {
+        self.kernel
+            .resolve_probe(request_id, resolution, max_attempts)
+    }
+
+    /// Records one terminal public response.
+    pub fn complete(
+        &mut self,
+        response: &FramedMessage,
+    ) -> Result<CompletedPendingRequest, HostRejection> {
+        self.kernel.complete_response(response)
+    }
+}
 
 /// Reads an append-only JSONL file into typed records.
 pub fn read_json_lines<T>(path: &Path) -> io::Result<Vec<T>>
