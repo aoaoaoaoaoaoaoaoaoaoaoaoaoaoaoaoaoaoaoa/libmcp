@@ -308,24 +308,12 @@ fn unix_ms_now() -> io::Result<u64> {
     u64::try_from(millis).map_err(|_| io::Error::other("Unix timestamp milliseconds exceed u64"))
 }
 
-#[cfg(unix)]
 fn lock_file_append(file: &std::fs::File) -> io::Result<()> {
-    rustix::fs::flock(file, rustix::fs::FlockOperation::LockExclusive).map_err(io::Error::from)
+    file.lock()
 }
 
-#[cfg(unix)]
 fn unlock_file_append(file: &std::fs::File) -> io::Result<()> {
-    rustix::fs::flock(file, rustix::fs::FlockOperation::Unlock).map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-fn lock_file_append(_file: &std::fs::File) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn unlock_file_append(_file: &std::fs::File) -> io::Result<()> {
-    Ok(())
+    file.unlock()
 }
 
 #[cfg(test)]
