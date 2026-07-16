@@ -78,10 +78,14 @@ pub struct TelemetryTotals {
     request_count: u64,
     /// Requests that completed successfully.
     success_count: u64,
-    /// Requests that returned downstream response errors.
+    /// Requests that completed with any public error response.
+    error_count: u64,
+    /// Requests that completed with downstream response errors.
     response_error_count: u64,
-    /// Requests that failed due to transport or process churn.
-    transport_fault_count: u64,
+    /// Requests that completed with host-recovery errors.
+    recovery_error_count: u64,
+    /// Recovery-triggering operational faults observed.
+    recovery_fault_count: u64,
     /// Requests retried by the runtime.
     retry_count: u64,
 }
@@ -99,16 +103,28 @@ impl TelemetryTotals {
         self.success_count
     }
 
+    /// Returns all terminal public errors.
+    #[must_use]
+    pub const fn error_count(&self) -> u64 {
+        self.error_count
+    }
+
     /// Returns terminal downstream response errors.
     #[must_use]
     pub const fn response_error_count(&self) -> u64 {
         self.response_error_count
     }
 
-    /// Returns transport or process faults associated with requests.
+    /// Returns terminal public errors caused by host recovery.
     #[must_use]
-    pub const fn transport_fault_count(&self) -> u64 {
-        self.transport_fault_count
+    pub const fn recovery_error_count(&self) -> u64 {
+        self.recovery_error_count
+    }
+
+    /// Returns recovery-triggering operational fault incidents.
+    #[must_use]
+    pub const fn recovery_fault_count(&self) -> u64 {
+        self.recovery_fault_count
     }
 
     /// Returns actual redispatches.
@@ -127,10 +143,14 @@ pub struct MethodTelemetry {
     request_count: u64,
     /// Successful requests.
     success_count: u64,
-    /// Response errors.
+    /// All terminal public errors.
+    error_count: u64,
+    /// Downstream response errors.
     response_error_count: u64,
-    /// Transport/process faults.
-    transport_fault_count: u64,
+    /// Terminal errors caused by host recovery.
+    recovery_error_count: u64,
+    /// Recovery-triggering operational fault incidents.
+    recovery_fault_count: u64,
     /// Retry count.
     retry_count: u64,
     /// Most recent latency, if any.
@@ -150,6 +170,72 @@ impl MethodTelemetry {
     #[must_use]
     pub const fn method(&self) -> &RpcMethod {
         &self.method
+    }
+
+    /// Returns admitted public requests for this method.
+    #[must_use]
+    pub const fn request_count(&self) -> u64 {
+        self.request_count
+    }
+
+    /// Returns terminal public successes for this method.
+    #[must_use]
+    pub const fn success_count(&self) -> u64 {
+        self.success_count
+    }
+
+    /// Returns all terminal public errors for this method.
+    #[must_use]
+    pub const fn error_count(&self) -> u64 {
+        self.error_count
+    }
+
+    /// Returns terminal downstream response errors for this method.
+    #[must_use]
+    pub const fn response_error_count(&self) -> u64 {
+        self.response_error_count
+    }
+
+    /// Returns terminal host-recovery errors for this method.
+    #[must_use]
+    pub const fn recovery_error_count(&self) -> u64 {
+        self.recovery_error_count
+    }
+
+    /// Returns recovery-triggering fault incidents for this method.
+    #[must_use]
+    pub const fn recovery_fault_count(&self) -> u64 {
+        self.recovery_fault_count
+    }
+
+    /// Returns actual redispatches for this method.
+    #[must_use]
+    pub const fn retry_count(&self) -> u64 {
+        self.retry_count
+    }
+
+    /// Returns the most recent measured terminal latency.
+    #[must_use]
+    pub const fn last_latency_ms(&self) -> Option<u64> {
+        self.last_latency_ms
+    }
+
+    /// Returns the maximum measured terminal latency.
+    #[must_use]
+    pub const fn max_latency_ms(&self) -> u64 {
+        self.max_latency_ms
+    }
+
+    /// Returns the mean measured terminal latency.
+    #[must_use]
+    pub const fn avg_latency_ms(&self) -> u64 {
+        self.avg_latency_ms
+    }
+
+    /// Returns the most recent public or operational error detail.
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 }
 
@@ -193,10 +279,12 @@ struct MethodLedger {
     request_count: u64,
     in_flight: u64,
     success_count: u64,
+    error_count: u64,
     response_error_count: u64,
-    transport_fault_count: u64,
+    recovery_error_count: u64,
+    recovery_fault_count: u64,
     retry_count: u64,
-    completed_count: u64,
+    latency_sample_count: u64,
     total_latency_ms: u64,
     last_latency_ms: Option<u64>,
     max_latency_ms: u64,
@@ -231,8 +319,10 @@ impl OperationalLedger {
             totals: TelemetryTotals {
                 request_count: 0,
                 success_count: 0,
+                error_count: 0,
                 response_error_count: 0,
-                transport_fault_count: 0,
+                recovery_error_count: 0,
+                recovery_fault_count: 0,
                 retry_count: 0,
             },
             methods: BTreeMap::new(),
@@ -283,16 +373,39 @@ impl OperationalLedger {
         record_latency(metrics, latency_ms)?;
         metrics.response_error_count =
             checked_increment(metrics.response_error_count, "method response errors")?;
+        metrics.error_count = checked_increment(metrics.error_count, "method errors")?;
         metrics.in_flight -= 1;
         metrics.last_error = Some(detail);
         next.totals.response_error_count =
             checked_increment(next.totals.response_error_count, "total response errors")?;
+        next.totals.error_count = checked_increment(next.totals.error_count, "total errors")?;
         *self = next;
         Ok(())
     }
 
-    /// Records a transport/process fault without pretending it was terminal.
-    pub fn record_fault(
+    /// Records a terminal public error caused by host recovery.
+    pub fn record_recovery_error(
+        &mut self,
+        method: &RpcMethod,
+        detail: impl Into<String>,
+    ) -> Result<(), OperationalMetricError> {
+        let detail = detail.into();
+        let mut next = self.clone();
+        let metrics = next.live_method_mut(method)?;
+        metrics.recovery_error_count =
+            checked_increment(metrics.recovery_error_count, "method recovery errors")?;
+        metrics.error_count = checked_increment(metrics.error_count, "method errors")?;
+        metrics.in_flight -= 1;
+        metrics.last_error = Some(detail);
+        next.totals.recovery_error_count =
+            checked_increment(next.totals.recovery_error_count, "total recovery errors")?;
+        next.totals.error_count = checked_increment(next.totals.error_count, "total errors")?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Records a recovery-triggering fault without pretending it was terminal.
+    pub fn record_recovery_fault(
         &mut self,
         method: Option<&RpcMethod>,
         fault: Fault,
@@ -303,12 +416,12 @@ impl OperationalLedger {
         let mut next = self.clone();
         if let Some(method) = method {
             let metrics = next.live_method_mut(method)?;
-            metrics.transport_fault_count =
-                checked_increment(metrics.transport_fault_count, "method transport faults")?;
+            metrics.recovery_fault_count =
+                checked_increment(metrics.recovery_fault_count, "method recovery faults")?;
             metrics.last_error = Some(fault.detail.clone());
-            next.totals.transport_fault_count =
-                checked_increment(next.totals.transport_fault_count, "total transport faults")?;
         }
+        next.totals.recovery_fault_count =
+            checked_increment(next.totals.recovery_fault_count, "total recovery faults")?;
         next.consecutive_failures = next.consecutive_failures.checked_add(1).ok_or(
             OperationalMetricError::CounterExhausted("consecutive failures"),
         )?;
@@ -407,7 +520,8 @@ fn record_latency(
     metrics: &mut MethodLedger,
     latency_ms: u64,
 ) -> Result<(), OperationalMetricError> {
-    metrics.completed_count = checked_increment(metrics.completed_count, "method completions")?;
+    metrics.latency_sample_count =
+        checked_increment(metrics.latency_sample_count, "method latency samples")?;
     metrics.total_latency_ms = metrics.total_latency_ms.checked_add(latency_ms).ok_or(
         OperationalMetricError::CounterExhausted("method total latency"),
     )?;
@@ -419,14 +533,16 @@ fn record_latency(
 fn method_snapshot(method: &RpcMethod, metrics: &MethodLedger) -> MethodTelemetry {
     let avg_latency_ms = metrics
         .total_latency_ms
-        .checked_div(metrics.completed_count)
+        .checked_div(metrics.latency_sample_count)
         .unwrap_or(0);
     MethodTelemetry {
         method: method.clone(),
         request_count: metrics.request_count,
         success_count: metrics.success_count,
+        error_count: metrics.error_count,
         response_error_count: metrics.response_error_count,
-        transport_fault_count: metrics.transport_fault_count,
+        recovery_error_count: metrics.recovery_error_count,
+        recovery_fault_count: metrics.recovery_fault_count,
         retry_count: metrics.retry_count,
         last_latency_ms: metrics.last_latency_ms,
         max_latency_ms: metrics.max_latency_ms,
@@ -468,6 +584,10 @@ mod tests {
         assert_eq!(snapshot.generation, replacement);
         assert_eq!(snapshot.restart_count, 1);
         assert_eq!(snapshot.totals.request_count(), 2);
+        assert_eq!(snapshot.totals.success_count(), 1);
+        assert_eq!(snapshot.totals.error_count(), 1);
+        assert_eq!(snapshot.totals.response_error_count(), 1);
+        assert_eq!(snapshot.totals.recovery_error_count(), 0);
         assert_eq!(snapshot.totals.retry_count(), 1);
         assert!(matches!(
             snapshot.methods.as_slice(),
@@ -491,7 +611,7 @@ mod tests {
             Some(RecoveryHint::ReplaceWorker),
             "worker pipe closed",
         );
-        assert!(ledger.record_fault(Some(&method), fault).is_ok());
+        assert!(ledger.record_recovery_fault(Some(&method), fault).is_ok());
         let health = ledger.health_snapshot(
             9,
             LifecycleState::Recovering,
@@ -501,9 +621,46 @@ mod tests {
         assert_eq!(health.state, LifecycleState::Recovering);
         assert_eq!(health.worker_handshake, WorkerHandshakePhase::Starting);
         assert_eq!(health.consecutive_failures, 1);
+        let telemetry = ledger.telemetry_snapshot(
+            9,
+            LifecycleState::Recovering,
+            WorkerHandshakePhase::Starting,
+        );
+        assert_eq!(telemetry.totals.recovery_fault_count(), 1);
+        assert_eq!(telemetry.totals.error_count(), 0);
         assert!(ledger.record_success(&method, 20).is_ok());
         let healthy =
             ledger.health_snapshot(10, LifecycleState::Ready, WorkerHandshakePhase::Ready, None);
         assert_eq!(healthy.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn ledger_distinguishes_terminal_recovery_errors_from_fault_incidents() {
+        let mut ledger = OperationalLedger::new(Generation::genesis());
+        let method = RpcMethod::try_new("tools/call");
+        let Ok(method) = method else {
+            return;
+        };
+        assert!(ledger.record_request(method.clone()).is_ok());
+        assert!(
+            ledger
+                .record_recovery_error(&method, "ambiguous outcome")
+                .is_ok()
+        );
+
+        let snapshot =
+            ledger.telemetry_snapshot(5, LifecycleState::Ready, WorkerHandshakePhase::Ready);
+        assert_eq!(snapshot.totals.request_count(), 1);
+        assert_eq!(snapshot.totals.success_count(), 0);
+        assert_eq!(snapshot.totals.error_count(), 1);
+        assert_eq!(snapshot.totals.response_error_count(), 0);
+        assert_eq!(snapshot.totals.recovery_error_count(), 1);
+        assert_eq!(snapshot.totals.recovery_fault_count(), 0);
+        assert!(matches!(
+            snapshot.methods.as_slice(),
+            [method] if method.error_count() == 1
+                && method.recovery_error_count() == 1
+                && method.recovery_fault_count() == 0
+        ));
     }
 }
