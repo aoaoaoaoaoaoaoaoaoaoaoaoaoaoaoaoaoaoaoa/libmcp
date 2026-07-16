@@ -360,6 +360,25 @@ impl OperationalLedger {
         Ok(())
     }
 
+    /// Records one terminal public error originating in the host itself.
+    pub fn record_error(
+        &mut self,
+        method: &RpcMethod,
+        latency_ms: u64,
+        detail: impl Into<String>,
+    ) -> Result<(), OperationalMetricError> {
+        let detail = detail.into();
+        let mut next = self.clone();
+        let metrics = next.live_method_mut(method)?;
+        record_latency(metrics, latency_ms)?;
+        metrics.error_count = checked_increment(metrics.error_count, "method errors")?;
+        metrics.in_flight -= 1;
+        metrics.last_error = Some(detail);
+        next.totals.error_count = checked_increment(next.totals.error_count, "total errors")?;
+        *self = next;
+        Ok(())
+    }
+
     /// Records one terminal downstream response error.
     pub fn record_response_error(
         &mut self,
@@ -661,6 +680,32 @@ mod tests {
             [method] if method.error_count() == 1
                 && method.recovery_error_count() == 1
                 && method.recovery_fault_count() == 0
+        ));
+    }
+
+    #[test]
+    fn ledger_keeps_host_errors_out_of_downstream_and_recovery_buckets() {
+        let mut ledger = OperationalLedger::new(Generation::genesis());
+        let method = RpcMethod::try_new("tools/call");
+        let Ok(method) = method else {
+            return;
+        };
+        assert!(ledger.record_request(method.clone()).is_ok());
+        assert!(ledger.record_error(&method, 7, "invalid params").is_ok());
+
+        let snapshot =
+            ledger.telemetry_snapshot(8, LifecycleState::Ready, WorkerHandshakePhase::Ready);
+        assert_eq!(snapshot.totals.request_count(), 1);
+        assert_eq!(snapshot.totals.error_count(), 1);
+        assert_eq!(snapshot.totals.response_error_count(), 0);
+        assert_eq!(snapshot.totals.recovery_error_count(), 0);
+        assert_eq!(snapshot.totals.recovery_fault_count(), 0);
+        assert!(matches!(
+            snapshot.methods.as_slice(),
+            [method] if method.error_count() == 1
+                && method.response_error_count() == 0
+                && method.recovery_error_count() == 0
+                && method.last_latency_ms() == Some(7)
         ));
     }
 }
