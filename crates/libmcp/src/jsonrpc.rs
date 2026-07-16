@@ -3,7 +3,10 @@
 use crate::normalize::fold_ascii_token;
 use crate::types::InvariantViolation;
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, MapAccess, SeqAccess, Visitor},
+};
 use serde_json::{Map, Number, Value};
 use std::{fmt, io};
 use thiserror::Error;
@@ -187,6 +190,9 @@ pub enum FrameParseError {
     /// The payload was not valid JSON.
     #[error("invalid JSON-RPC frame payload: {0}")]
     InvalidJson(#[from] serde_json::Error),
+    /// An object contained the same member name more than once.
+    #[error("JSON-RPC frame contains duplicate object member `{0}`")]
+    DuplicateObjectMember(String),
     /// The frame root was not an object.
     #[error("JSON-RPC frame root must be an object")]
     RootNotObject,
@@ -221,7 +227,11 @@ pub struct FramedMessage {
 impl FramedMessage {
     /// Parses and validates a JSON-RPC frame payload.
     pub fn parse(payload: Vec<u8>) -> Result<Self, FrameParseError> {
-        let value = serde_json::from_slice::<Value>(&payload)?;
+        let parsed = serde_json::from_slice::<DistinctJsonValue>(&payload)?;
+        if let Some(member) = parsed.duplicate_member {
+            return Err(FrameParseError::DuplicateObjectMember(member));
+        }
+        let value = parsed.value;
         let object = value.as_object().ok_or(FrameParseError::RootNotObject)?;
         let envelope = validate_envelope(object)?;
         Ok(Self {
@@ -247,6 +257,115 @@ impl FramedMessage {
     #[must_use]
     pub fn classify(&self) -> RpcEnvelopeKind {
         self.envelope.clone()
+    }
+}
+
+struct DistinctJsonValue {
+    value: Value,
+    duplicate_member: Option<String>,
+}
+
+impl DistinctJsonValue {
+    fn unique(value: Value) -> Self {
+        Self {
+            value,
+            duplicate_member: None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DistinctJsonValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DistinctJsonVisitor)
+    }
+}
+
+struct DistinctJsonVisitor;
+
+impl<'de> Visitor<'de> for DistinctJsonVisitor {
+    type Value = DistinctJsonValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(DistinctJsonValue::unique(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(DistinctJsonValue::unique(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(DistinctJsonValue::unique(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Number::from_f64(value)
+            .map(Value::Number)
+            .map(DistinctJsonValue::unique)
+            .ok_or_else(|| E::custom("JSON numbers must be finite"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_string(value.to_owned())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(DistinctJsonValue::unique(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(DistinctJsonValue::unique(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(DistinctJsonValue::unique(Value::Null))
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        let mut duplicate_member = None;
+        while let Some(element) = sequence.next_element::<DistinctJsonValue>()? {
+            duplicate_member = duplicate_member.or(element.duplicate_member);
+            values.push(element.value);
+        }
+        Ok(DistinctJsonValue {
+            value: Value::Array(values),
+            duplicate_member,
+        })
+    }
+
+    fn visit_map<A>(self, mut members: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = Map::new();
+        let mut duplicate_member = None;
+        while let Some(member) = members.next_key::<String>()? {
+            let child = members.next_value::<DistinctJsonValue>()?;
+            duplicate_member = duplicate_member.or(child.duplicate_member);
+            if object.insert(member.clone(), child.value).is_some() {
+                duplicate_member = duplicate_member.or(Some(member));
+            }
+        }
+        Ok(DistinctJsonValue {
+            value: Value::Object(object),
+            duplicate_member,
+        })
     }
 }
 
@@ -624,6 +743,25 @@ mod tests {
 
         let scalar = FramedMessage::parse(b"[]".to_vec());
         assert!(matches!(scalar, Err(FrameParseError::RootNotObject)));
+    }
+
+    #[test]
+    fn rejects_duplicate_members_at_every_depth() {
+        let root = FramedMessage::parse(
+            br#"{"jsonrpc":"2.0","id":1,"id":2,"method":"tools/call"}"#.to_vec(),
+        );
+        assert!(matches!(
+            root,
+            Err(FrameParseError::DuplicateObjectMember(member)) if member == "id"
+        ));
+
+        let nested = FramedMessage::parse(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"x":1,"x":2}}"#.to_vec(),
+        );
+        assert!(matches!(
+            nested,
+            Err(FrameParseError::DuplicateObjectMember(member)) if member == "x"
+        ));
     }
 
     #[test]
