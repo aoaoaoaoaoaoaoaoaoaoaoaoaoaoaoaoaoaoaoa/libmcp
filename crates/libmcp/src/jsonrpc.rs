@@ -344,6 +344,29 @@ pub enum FrameReadOutcome {
     EndOfStream,
 }
 
+/// Maximum bytes in one line-delimited frame, excluding the `\n` delimiter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FrameLimit(usize);
+
+impl FrameLimit {
+    /// A conservative eight-mebibyte frame limit.
+    pub const DEFAULT: Self = Self(8 * 1024 * 1024);
+
+    /// Constructs a non-zero frame limit.
+    pub fn try_new(max_bytes: usize) -> Result<Self, InvariantViolation> {
+        if max_bytes == 0 {
+            return Err(InvariantViolation::new("frame limit must be non-zero"));
+        }
+        Ok(Self(max_bytes))
+    }
+
+    /// Returns the byte limit.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
 /// Extracts `tools/call` metadata from a JSON-RPC frame.
 #[must_use]
 pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &RpcMethod) -> Option<ToolCallMeta> {
@@ -375,38 +398,75 @@ pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &RpcMethod) -> Op
     })
 }
 
-/// Reads one line-delimited JSON-RPC frame.
-pub async fn read_frame<R>(reader: &mut BufReader<R>) -> io::Result<FrameReadOutcome>
+/// Reads one line-delimited JSON-RPC frame within an explicit byte limit.
+pub async fn read_frame<R>(
+    reader: &mut BufReader<R>,
+    limit: FrameLimit,
+) -> io::Result<FrameReadOutcome>
 where
     R: AsyncRead + Unpin,
 {
+    let mut line = Vec::<u8>::new();
     loop {
-        let mut line = Vec::<u8>::new();
-        let bytes_read = reader.read_until(b'\n', &mut line).await?;
-        if bytes_read == 0 {
-            return Ok(FrameReadOutcome::EndOfStream);
+        let buffer = reader.fill_buf().await?;
+        if buffer.is_empty() {
+            return if line.is_empty() {
+                Ok(FrameReadOutcome::EndOfStream)
+            } else {
+                Ok(FrameReadOutcome::Frame(line))
+            };
         }
 
-        while line
-            .last()
-            .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
-        {
-            let _popped = line.pop();
+        let delimiter = buffer.iter().position(|byte| *byte == b'\n');
+        let payload_bytes = delimiter.unwrap_or(buffer.len());
+        let next_len = line.len().checked_add(payload_bytes);
+        if next_len.is_none_or(|length| length > limit.get()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("JSON-RPC frame exceeds {} byte limit", limit.get()),
+            ));
         }
+        line.extend_from_slice(&buffer[..payload_bytes]);
+        let consumed = delimiter.map_or(payload_bytes, |position| position + 1);
+        reader.consume(consumed);
 
-        if line.is_empty() {
+        if delimiter.is_none() {
             continue;
         }
 
+        if line.last() == Some(&b'\r') {
+            let _carriage_return = line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
         return Ok(FrameReadOutcome::Frame(line));
     }
 }
 
-/// Writes one line-delimited JSON-RPC frame.
-pub async fn write_frame<W>(writer: &mut W, payload: &[u8]) -> io::Result<()>
+/// Writes one line-delimited JSON-RPC frame within an explicit byte limit.
+pub async fn write_frame<W>(writer: &mut W, payload: &[u8], limit: FrameLimit) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
+    if payload.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "JSON-RPC frame must not be empty",
+        ));
+    }
+    if payload.len() > limit.get() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("JSON-RPC frame exceeds {} byte limit", limit.get()),
+        ));
+    }
+    if payload.contains(&b'\n') || payload.last() == Some(&b'\r') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "JSON-RPC frame payload must not contain a line delimiter",
+        ));
+    }
     writer.write_all(payload).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await?;
@@ -481,10 +541,11 @@ fn normalize_path_hint(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameParseError, FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolName,
-        parse_tool_call_meta,
+        FrameLimit, FrameParseError, FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind,
+        RpcMethod, ToolName, parse_tool_call_meta, read_frame, write_frame,
     };
     use serde_json::{Number, json};
+    use tokio::io::BufReader;
 
     #[test]
     fn request_id_round_trips_numeric_and_textual_values() {
@@ -618,5 +679,36 @@ mod tests {
             Some("textDocument/hover")
         );
         assert_eq!(meta.path_hint.as_deref(), Some("/tmp/example.rs"));
+    }
+
+    #[tokio::test]
+    async fn reads_frames_without_unbounded_line_growth() {
+        let mut reader = BufReader::new(&b"\n1234\r\n"[..]);
+        let limit = match FrameLimit::try_new(5) {
+            Ok(limit) => limit,
+            Err(_) => return,
+        };
+        let outcome = read_frame(&mut reader, limit).await;
+        assert!(matches!(outcome, Ok(FrameReadOutcome::Frame(payload)) if payload == b"1234"));
+
+        let rejected = read_frame(&mut BufReader::new(&b"123456\n"[..]), limit).await;
+        assert!(matches!(rejected, Err(error) if error.kind() == std::io::ErrorKind::InvalidData));
+    }
+
+    #[tokio::test]
+    async fn rejects_unframeable_output_before_writing() {
+        let mut sink = tokio::io::sink();
+        let limit = match FrameLimit::try_new(16) {
+            Ok(limit) => limit,
+            Err(_) => return,
+        };
+        let embedded_newline = write_frame(&mut sink, b"{}\n{}", limit).await;
+        assert!(
+            matches!(embedded_newline, Err(error) if error.kind() == std::io::ErrorKind::InvalidInput)
+        );
+        let oversized = write_frame(&mut sink, b"12345678901234567", limit).await;
+        assert!(
+            matches!(oversized, Err(error) if error.kind() == std::io::ErrorKind::InvalidInput)
+        );
     }
 }
