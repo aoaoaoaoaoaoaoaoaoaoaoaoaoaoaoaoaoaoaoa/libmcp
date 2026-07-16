@@ -45,7 +45,7 @@ impl ExecutionKnowledge {
 
     /// Records one observed terminal worker outcome.
     pub fn after_terminal_outcome(self) -> Result<Self, ExecutionTransitionError> {
-        if self == Self::InFlight {
+        if matches!(self, Self::InFlight | Self::OutcomeUnknown) {
             Ok(Self::Completed)
         } else {
             Err(ExecutionTransitionError {
@@ -307,6 +307,10 @@ mod tests {
         assert_eq!(
             ExecutionKnowledge::InFlight.after_worker_loss(),
             ExecutionKnowledge::OutcomeUnknown
+        );
+        assert_eq!(
+            ExecutionKnowledge::OutcomeUnknown.after_terminal_outcome(),
+            Ok(ExecutionKnowledge::Completed)
         );
         assert!(
             ExecutionKnowledge::Completed

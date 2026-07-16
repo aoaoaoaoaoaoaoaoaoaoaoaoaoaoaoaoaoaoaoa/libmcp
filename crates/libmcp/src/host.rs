@@ -4,7 +4,10 @@ use crate::{
     jsonrpc::{
         FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolCallMeta, parse_tool_call_meta,
     },
-    replay::ReplayContract,
+    replay::{
+        ExecutionKnowledge, ProbeResolution, ReplayAllowance, ReplayContract, RequestDisposition,
+        request_disposition,
+    },
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -52,6 +55,18 @@ pub enum HostRejection {
     QueueOverflow,
     /// The request exhausted its automatic replay budget.
     ReplayBudgetExhausted,
+    /// An outstanding request already owns this public ID.
+    DuplicateRequestId,
+    /// The pending invocation capacity was exhausted.
+    PendingCapacityExhausted,
+    /// The frame was not a JSON-RPC request.
+    InvalidRequestFrame,
+    /// The request may have executed and its contract forbids replay.
+    AmbiguousOutcome,
+    /// A response or probe named no pending invocation.
+    RequestNotPending,
+    /// Kernel state contradicted the execution transition law.
+    InvalidExecutionState,
 }
 
 impl HostRejection {
@@ -61,6 +76,12 @@ impl HostRejection {
         match self {
             Self::QueueOverflow => -32097,
             Self::ReplayBudgetExhausted => -32095,
+            Self::DuplicateRequestId => -32600,
+            Self::PendingCapacityExhausted => -32096,
+            Self::InvalidRequestFrame => -32600,
+            Self::AmbiguousOutcome => -32094,
+            Self::RequestNotPending => -32600,
+            Self::InvalidExecutionState => -32603,
         }
     }
 
@@ -70,6 +91,12 @@ impl HostRejection {
         match self {
             Self::QueueOverflow => "worker queue overflow during recovery",
             Self::ReplayBudgetExhausted => "worker restart replay budget exhausted for request",
+            Self::DuplicateRequestId => "public request id is already outstanding",
+            Self::PendingCapacityExhausted => "pending request capacity exhausted",
+            Self::InvalidRequestFrame => "frame is not a JSON-RPC request",
+            Self::AmbiguousOutcome => "request outcome is ambiguous and replay is forbidden",
+            Self::RequestNotPending => "request id is not pending",
+            Self::InvalidExecutionState => "request execution state transition is invalid",
         }
     }
 }
@@ -77,18 +104,65 @@ impl HostRejection {
 /// Live pending request tracked by the host.
 #[derive(Debug, Clone)]
 pub struct PendingRequest {
-    /// Public JSON-RPC method.
-    pub method: RpcMethod,
-    /// Stable ordering sequence across retries.
-    pub sequence: u64,
-    /// Original request frame.
-    pub frame: FramedMessage,
-    /// Replay legality for the request surface.
-    pub replay_contract: ReplayContract,
-    /// Local start time for latency and age accounting.
-    pub started_at: StdInstant,
-    /// Best-effort tool metadata for telemetry grouping.
-    pub tool_call_meta: Option<ToolCallMeta>,
+    method: RpcMethod,
+    sequence: u64,
+    frame: FramedMessage,
+    replay_contract: ReplayContract,
+    started_at: StdInstant,
+    tool_call_meta: Option<ToolCallMeta>,
+    execution_knowledge: ExecutionKnowledge,
+    replay_attempts: u8,
+    scheduled_disposition: Option<RequestDisposition>,
+}
+
+impl PendingRequest {
+    /// Returns the immutable public JSON-RPC method.
+    #[must_use]
+    pub const fn method(&self) -> &RpcMethod {
+        &self.method
+    }
+
+    /// Returns the stable ordering sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the immutable original request frame.
+    #[must_use]
+    pub const fn frame(&self) -> &FramedMessage {
+        &self.frame
+    }
+
+    /// Returns the invocation's replay contract.
+    #[must_use]
+    pub const fn replay_contract(&self) -> ReplayContract {
+        self.replay_contract
+    }
+
+    /// Returns the local invocation start time.
+    #[must_use]
+    pub const fn started_at(&self) -> StdInstant {
+        self.started_at
+    }
+
+    /// Returns best-effort tool metadata for telemetry grouping.
+    #[must_use]
+    pub const fn tool_call_meta(&self) -> Option<&ToolCallMeta> {
+        self.tool_call_meta.as_ref()
+    }
+
+    /// Returns what the kernel knows about execution.
+    #[must_use]
+    pub const fn execution_knowledge(&self) -> ExecutionKnowledge {
+        self.execution_knowledge
+    }
+
+    /// Returns replay attempts actually dispatched.
+    #[must_use]
+    pub const fn replay_attempts(&self) -> u8 {
+        self.replay_attempts
+    }
 }
 
 /// Pending request plus the number of replay attempts consumed so far.
@@ -98,6 +172,32 @@ pub struct CompletedPendingRequest {
     pub request: PendingRequest,
     /// Replay attempts consumed for this request.
     pub replay_attempts: u8,
+}
+
+/// Result of taking the next recovery-ordered dispatch.
+#[derive(Debug, Clone)]
+pub enum DispatchQueueOutcome {
+    /// One frame has crossed the kernel's dispatch boundary.
+    Frame(FramedMessage),
+    /// An older invocation blocks the queue pending consumer evidence.
+    HeldForProbe {
+        /// Public request identifier awaiting a probe.
+        request_id: RequestId,
+    },
+    /// No frame is waiting.
+    Empty,
+}
+
+/// Result of applying consumer probe evidence.
+#[derive(Debug, Clone)]
+pub enum ProbeResolutionOutcome {
+    /// The prior attempt completed and the invocation left pending state.
+    Completed(Box<CompletedPendingRequest>),
+    /// The held invocation is now authorized to replay in order.
+    ReplayAuthorized {
+        /// Public request identifier.
+        request_id: RequestId,
+    },
 }
 
 /// Recovery-time configuration for pending-request replay.
@@ -117,7 +217,7 @@ pub struct RejectedReplay {
     /// Pending request metadata.
     pub request: PendingRequest,
     /// Attempt number that triggered the drop.
-    pub next_attempt: u8,
+    pub next_attempt: Option<u8>,
     /// Rejection reason.
     pub reason: HostRejection,
 }
@@ -127,6 +227,8 @@ pub struct RejectedReplay {
 pub struct ReplayRequeueOutcome {
     /// Requests dropped during recovery.
     pub rejected: Vec<RejectedReplay>,
+    /// Requests held in recovery order until consumer probes resolve them.
+    pub held_for_probe: Vec<RequestId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,13 +238,10 @@ struct PendingRequestSnapshot {
     sequence: u64,
     frame: Vec<u8>,
     replay_contract: ReplayContract,
+    execution_knowledge: ExecutionKnowledge,
+    replay_attempts: u8,
+    scheduled_disposition: Option<RequestDisposition>,
     age_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ReplayAttemptSnapshot {
-    request_id: RequestId,
-    attempts: u8,
 }
 
 /// Serializable kernel snapshot for host self-reexec.
@@ -154,8 +253,6 @@ pub struct HostSessionKernelSnapshot {
     pub initialization_seed: Option<InitializationSeed>,
     /// Live pending requests.
     pending: Vec<PendingRequestSnapshot>,
-    /// Retry counters for pending requests.
-    replay_attempts: Vec<ReplayAttemptSnapshot>,
     /// Backlog of client frames waiting on worker readiness.
     pub queued_frames: Vec<Vec<u8>>,
     /// Next pending sequence number.
@@ -171,8 +268,6 @@ pub struct RestoredHostSessionKernel {
     pub initialization_seed: Option<InitializationSeed>,
     /// Live pending requests.
     pub pending: HashMap<RequestId, PendingRequest>,
-    /// Retry counters for pending requests.
-    pub replay_attempts: HashMap<RequestId, u8>,
     /// Backlog of client frames waiting on worker readiness.
     pub queued_frames: VecDeque<FramedMessage>,
     /// Next pending sequence number.
@@ -187,7 +282,6 @@ impl RestoredHostSessionKernel {
             session_phase: SessionPhase::Cold,
             initialization_seed: None,
             pending: HashMap::new(),
-            replay_attempts: HashMap::new(),
             queued_frames: VecDeque::new(),
             next_pending_sequence: 0,
         }
@@ -200,7 +294,6 @@ pub struct HostSessionKernel {
     session_phase: SessionPhase,
     initialization_seed: Option<InitializationSeed>,
     pending: HashMap<RequestId, PendingRequest>,
-    replay_attempts: HashMap<RequestId, u8>,
     queued_frames: VecDeque<FramedMessage>,
     next_pending_sequence: u64,
 }
@@ -219,7 +312,6 @@ impl HostSessionKernel {
             session_phase: restored.session_phase,
             initialization_seed: restored.initialization_seed,
             pending: restored.pending,
-            replay_attempts: restored.replay_attempts,
             queued_frames: restored.queued_frames,
             next_pending_sequence: restored.next_pending_sequence,
         }
@@ -238,6 +330,9 @@ impl HostSessionKernel {
                 sequence: request.sequence,
                 frame: request.frame.payload().to_vec(),
                 replay_contract: request.replay_contract,
+                execution_knowledge: request.execution_knowledge,
+                replay_attempts: request.replay_attempts,
+                scheduled_disposition: request.scheduled_disposition,
                 age_ms: duration_millis_u64(request.started_at.elapsed()),
             })
             .collect::<Vec<_>>();
@@ -246,19 +341,10 @@ impl HostSessionKernel {
             .iter()
             .map(|frame| frame.payload().to_vec())
             .collect::<Vec<_>>();
-        let replay_attempts = self
-            .replay_attempts
-            .iter()
-            .map(|(request_id, attempts)| ReplayAttemptSnapshot {
-                request_id: request_id.clone(),
-                attempts: *attempts,
-            })
-            .collect::<Vec<_>>();
         HostSessionKernelSnapshot {
             session_phase: self.session_phase,
             initialization_seed,
             pending,
-            replay_attempts,
             queued_frames,
             next_pending_sequence: self.next_pending_sequence,
         }
@@ -318,13 +404,60 @@ impl HostSessionKernel {
         if self.queued_frames.len() >= queue_capacity {
             return Err(HostRejection::QueueOverflow);
         }
+        if let RpcEnvelopeKind::Request { id, .. } = frame.classify()
+            && (self.pending.contains_key(&id) || self.queued_request_id(&id))
+        {
+            return Err(HostRejection::DuplicateRequestId);
+        }
         self.queued_frames.push_back(frame);
         Ok(())
     }
 
-    /// Pops the next queued client frame in order.
-    pub fn pop_queued_frame(&mut self) -> Option<FramedMessage> {
-        self.queued_frames.pop_front()
+    /// Takes the next dispatch in recovery order.
+    ///
+    /// Taking a replay crosses the kernel dispatch boundary and consumes its
+    /// attempt. A held probe blocks all younger work.
+    pub fn pop_next_dispatch(&mut self) -> Result<DispatchQueueOutcome, HostRejection> {
+        let Some(frame) = self.queued_frames.front().cloned() else {
+            return Ok(DispatchQueueOutcome::Empty);
+        };
+        let RpcEnvelopeKind::Request { id, .. } = frame.classify() else {
+            let _removed = self.queued_frames.pop_front();
+            return Ok(DispatchQueueOutcome::Frame(frame));
+        };
+        let Some(request) = self.pending.get_mut(&id) else {
+            let _removed = self.queued_frames.pop_front();
+            return Ok(DispatchQueueOutcome::Frame(frame));
+        };
+
+        match request.scheduled_disposition {
+            Some(RequestDisposition::HoldForProbe) => {
+                Ok(DispatchQueueOutcome::HeldForProbe { request_id: id })
+            }
+            Some(RequestDisposition::Replay) => {
+                request.execution_knowledge = request
+                    .execution_knowledge
+                    .after_dispatch(RequestDisposition::Replay)
+                    .map_err(|_| HostRejection::InvalidExecutionState)?;
+                request.replay_attempts = request
+                    .replay_attempts
+                    .checked_add(1)
+                    .ok_or(HostRejection::ReplayBudgetExhausted)?;
+                request.scheduled_disposition = None;
+                let _removed = self.queued_frames.pop_front();
+                Ok(DispatchQueueOutcome::Frame(frame))
+            }
+            Some(
+                RequestDisposition::FirstDispatch
+                | RequestDisposition::AwaitTerminal
+                | RequestDisposition::Completed
+                | RequestDisposition::CompleteFromProbe
+                | RequestDisposition::RejectAmbiguousOutcome
+                | RequestDisposition::RejectReplayExhausted
+                | RequestDisposition::RejectUnexpectedProbeResolution,
+            )
+            | None => Err(HostRejection::InvalidExecutionState),
+        }
     }
 
     /// Returns the number of queued client frames.
@@ -339,51 +472,68 @@ impl HostSessionKernel {
         self.queued_frames.is_empty()
     }
 
-    /// Tracks a client request that has been forwarded to the worker.
-    pub fn record_forwarded_request(
+    /// Begins first dispatch of a routed client request.
+    ///
+    /// Consumers call this immediately before crossing the worker transport
+    /// boundary so any subsequent uncertainty is conservatively in flight.
+    pub fn begin_request_dispatch(
         &mut self,
         frame: &FramedMessage,
         replay_contract: ReplayContract,
-    ) {
-        if let RpcEnvelopeKind::Request { id, method } = frame.classify() {
-            if method.is_initialize() {
-                self.session_phase = SessionPhase::Live;
-            }
-            let parsed_tool_meta = parse_tool_call_meta(frame, &method);
-            let prior = self.pending.get(&id).cloned();
-            let (sequence, started_at, tool_call_meta) = if let Some(previous) = prior {
-                (
-                    previous.sequence,
-                    previous.started_at,
-                    previous.tool_call_meta.or(parsed_tool_meta),
-                )
-            } else {
-                let sequence = self.next_pending_sequence;
-                self.next_pending_sequence = self.next_pending_sequence.saturating_add(1);
-                (sequence, StdInstant::now(), parsed_tool_meta)
-            };
-            let _previous = self.pending.insert(
-                id,
-                PendingRequest {
-                    method,
-                    sequence,
-                    frame: frame.clone(),
-                    replay_contract,
-                    started_at,
-                    tool_call_meta,
-                },
-            );
+        pending_capacity: usize,
+    ) -> Result<RequestId, HostRejection> {
+        let RpcEnvelopeKind::Request { id, method } = frame.classify() else {
+            return Err(HostRejection::InvalidRequestFrame);
+        };
+        if self.pending.contains_key(&id) || self.queued_request_id(&id) {
+            return Err(HostRejection::DuplicateRequestId);
         }
+        if self.pending.len() >= pending_capacity {
+            return Err(HostRejection::PendingCapacityExhausted);
+        }
+        let sequence = self.next_pending_sequence;
+        self.next_pending_sequence = self
+            .next_pending_sequence
+            .checked_add(1)
+            .ok_or(HostRejection::InvalidExecutionState)?;
+        let request = PendingRequest {
+            tool_call_meta: parse_tool_call_meta(frame, &method),
+            method,
+            sequence,
+            frame: frame.clone(),
+            replay_contract,
+            started_at: StdInstant::now(),
+            execution_knowledge: ExecutionKnowledge::InFlight,
+            replay_attempts: 0,
+            scheduled_disposition: None,
+        };
+        let _previous = self.pending.insert(id.clone(), request);
+        Ok(id)
     }
 
-    /// Removes a pending request after a response arrives.
-    pub fn take_completed_request(
+    /// Records and removes the single terminal outcome for an invocation.
+    pub fn complete_request(
         &mut self,
         request_id: &RequestId,
-    ) -> Option<CompletedPendingRequest> {
-        let request = self.pending.remove(request_id)?;
-        let replay_attempts = self.replay_attempts.remove(request_id).unwrap_or(0);
-        Some(CompletedPendingRequest {
+    ) -> Result<CompletedPendingRequest, HostRejection> {
+        let pending = self
+            .pending
+            .get_mut(request_id)
+            .ok_or(HostRejection::RequestNotPending)?;
+        pending.execution_knowledge = pending
+            .execution_knowledge
+            .after_terminal_outcome()
+            .map_err(|_| HostRejection::InvalidExecutionState)?;
+        let request = self
+            .pending
+            .remove(request_id)
+            .ok_or(HostRejection::InvalidExecutionState)?;
+        if request.method.is_initialize() {
+            self.session_phase = SessionPhase::Live;
+        }
+        self.remove_queued_request(request_id);
+        let replay_attempts = request.replay_attempts;
+        Ok(CompletedPendingRequest {
             request,
             replay_attempts,
         })
@@ -391,6 +541,10 @@ impl HostSessionKernel {
 
     /// Rebuilds the replay queue after worker failure.
     pub fn requeue_pending_for_replay(&mut self, budget: ReplayBudget) -> ReplayRequeueOutcome {
+        for request in self.pending.values_mut() {
+            request.execution_knowledge = request.execution_knowledge.after_worker_loss();
+            request.scheduled_disposition = None;
+        }
         let mut ordered_pending = self
             .pending
             .iter()
@@ -398,50 +552,6 @@ impl HostSessionKernel {
             .collect::<Vec<_>>();
         ordered_pending.sort_by_key(|(_, request)| request.sequence);
         let pending_ids = self.pending.keys().cloned().collect::<HashSet<_>>();
-
-        let mut replay_frames = VecDeque::<FramedMessage>::new();
-        let mut dropped_ids = Vec::<RequestId>::new();
-        let mut rejected = Vec::<RejectedReplay>::new();
-
-        for (request_id, request) in ordered_pending {
-            if request.method.is_initialize() {
-                continue;
-            }
-
-            let attempts_used = self.replay_attempts.get(&request_id).copied().unwrap_or(0);
-            let next_attempt = attempts_used.saturating_add(1);
-            if next_attempt > budget.max_attempts {
-                let _removed = self.replay_attempts.remove(&request_id);
-                dropped_ids.push(request_id.clone());
-                rejected.push(RejectedReplay {
-                    request_id,
-                    request,
-                    next_attempt,
-                    reason: HostRejection::ReplayBudgetExhausted,
-                });
-                continue;
-            }
-
-            if replay_frames.len().saturating_add(self.queued_frames.len()) >= budget.queue_capacity
-            {
-                let _removed = self.replay_attempts.remove(&request_id);
-                dropped_ids.push(request_id.clone());
-                rejected.push(RejectedReplay {
-                    request_id,
-                    request,
-                    next_attempt,
-                    reason: HostRejection::QueueOverflow,
-                });
-                continue;
-            }
-
-            let _previous = self.replay_attempts.insert(request_id, next_attempt);
-            replay_frames.push_back(request.frame.clone());
-        }
-
-        for request_id in dropped_ids {
-            let _removed = self.pending.remove(&request_id);
-        }
 
         let mut retained_queue = VecDeque::<FramedMessage>::new();
         while let Some(frame) = self.queued_frames.pop_front() {
@@ -454,9 +564,155 @@ impl HostSessionKernel {
             }
         }
 
+        let mut replay_frames = VecDeque::<FramedMessage>::new();
+        let mut dropped_ids = Vec::<RequestId>::new();
+        let mut rejected = Vec::<RejectedReplay>::new();
+        let mut held_for_probe = Vec::<RequestId>::new();
+
+        for (request_id, request) in ordered_pending {
+            let allowance = ReplayAllowance::new(request.replay_attempts, budget.max_attempts);
+            let disposition = request_disposition(
+                request.execution_knowledge,
+                request.replay_contract,
+                None,
+                allowance,
+            );
+            let reason = match disposition {
+                RequestDisposition::RejectReplayExhausted => {
+                    Some(HostRejection::ReplayBudgetExhausted)
+                }
+                RequestDisposition::RejectAmbiguousOutcome => Some(HostRejection::AmbiguousOutcome),
+                RequestDisposition::Replay | RequestDisposition::HoldForProbe => None,
+                RequestDisposition::FirstDispatch
+                | RequestDisposition::AwaitTerminal
+                | RequestDisposition::Completed
+                | RequestDisposition::CompleteFromProbe
+                | RequestDisposition::RejectUnexpectedProbeResolution => {
+                    Some(HostRejection::InvalidExecutionState)
+                }
+            };
+            if let Some(reason) = reason {
+                dropped_ids.push(request_id.clone());
+                rejected.push(RejectedReplay {
+                    request_id,
+                    request,
+                    next_attempt: allowance.next_attempt(),
+                    reason,
+                });
+                continue;
+            }
+
+            if replay_frames.len().saturating_add(retained_queue.len()) >= budget.queue_capacity {
+                dropped_ids.push(request_id.clone());
+                rejected.push(RejectedReplay {
+                    request_id,
+                    request,
+                    next_attempt: allowance.next_attempt(),
+                    reason: HostRejection::QueueOverflow,
+                });
+                continue;
+            }
+
+            if let Some(pending) = self.pending.get_mut(&request_id) {
+                pending.scheduled_disposition = Some(disposition);
+            }
+            if disposition == RequestDisposition::HoldForProbe {
+                held_for_probe.push(request_id);
+            }
+            replay_frames.push_back(request.frame.clone());
+        }
+
+        for request_id in dropped_ids {
+            let _removed = self.pending.remove(&request_id);
+        }
+
         replay_frames.append(&mut retained_queue);
         self.queued_frames = replay_frames;
-        ReplayRequeueOutcome { rejected }
+        ReplayRequeueOutcome {
+            rejected,
+            held_for_probe,
+        }
+    }
+
+    /// Applies explicit consumer evidence to a held probe-required request.
+    pub fn resolve_probe(
+        &mut self,
+        request_id: &RequestId,
+        resolution: ProbeResolution,
+        max_attempts: u8,
+    ) -> Result<ProbeResolutionOutcome, HostRejection> {
+        let pending = self
+            .pending
+            .get(request_id)
+            .ok_or(HostRejection::RequestNotPending)?;
+        if pending.scheduled_disposition != Some(RequestDisposition::HoldForProbe) {
+            return Err(HostRejection::InvalidExecutionState);
+        }
+        let disposition = request_disposition(
+            pending.execution_knowledge,
+            pending.replay_contract,
+            Some(resolution),
+            ReplayAllowance::new(pending.replay_attempts, max_attempts),
+        );
+        match disposition {
+            RequestDisposition::Replay => {
+                let pending = self
+                    .pending
+                    .get_mut(request_id)
+                    .ok_or(HostRejection::InvalidExecutionState)?;
+                pending.scheduled_disposition = Some(RequestDisposition::Replay);
+                Ok(ProbeResolutionOutcome::ReplayAuthorized {
+                    request_id: request_id.clone(),
+                })
+            }
+            RequestDisposition::CompleteFromProbe => {
+                let pending = self
+                    .pending
+                    .get_mut(request_id)
+                    .ok_or(HostRejection::InvalidExecutionState)?;
+                pending.execution_knowledge = pending
+                    .execution_knowledge
+                    .after_completed_probe()
+                    .map_err(|_| HostRejection::InvalidExecutionState)?;
+                self.remove_queued_request(request_id);
+                let request = self
+                    .pending
+                    .remove(request_id)
+                    .ok_or(HostRejection::InvalidExecutionState)?;
+                let replay_attempts = request.replay_attempts;
+                Ok(ProbeResolutionOutcome::Completed(Box::new(
+                    CompletedPendingRequest {
+                        request,
+                        replay_attempts,
+                    },
+                )))
+            }
+            RequestDisposition::RejectReplayExhausted => {
+                self.remove_queued_request(request_id);
+                let _removed = self.pending.remove(request_id);
+                Err(HostRejection::ReplayBudgetExhausted)
+            }
+            RequestDisposition::FirstDispatch
+            | RequestDisposition::AwaitTerminal
+            | RequestDisposition::Completed
+            | RequestDisposition::HoldForProbe
+            | RequestDisposition::RejectAmbiguousOutcome
+            | RequestDisposition::RejectUnexpectedProbeResolution => {
+                Err(HostRejection::InvalidExecutionState)
+            }
+        }
+    }
+
+    fn queued_request_id(&self, request_id: &RequestId) -> bool {
+        self.queued_frames.iter().any(|frame| {
+            matches!(frame.classify(), RpcEnvelopeKind::Request { id, .. } if &id == request_id)
+        })
+    }
+
+    fn remove_queued_request(&mut self, request_id: &RequestId) {
+        self.queued_frames.retain(|frame| {
+            !matches!(frame.classify(), RpcEnvelopeKind::Request { id, .. } if &id == request_id)
+        });
     }
 }
 
@@ -481,6 +737,9 @@ impl HostSessionKernelSnapshot {
                     replay_contract: snapshot.replay_contract,
                     started_at,
                     tool_call_meta,
+                    execution_knowledge: snapshot.execution_knowledge,
+                    replay_attempts: snapshot.replay_attempts,
+                    scheduled_disposition: snapshot.scheduled_disposition,
                 },
             );
             if previous.is_some() {
@@ -499,17 +758,10 @@ impl HostSessionKernelSnapshot {
             );
         }
 
-        let replay_attempts = self
-            .replay_attempts
-            .into_iter()
-            .map(|snapshot| (snapshot.request_id, snapshot.attempts))
-            .collect::<HashMap<_, _>>();
-
         Ok(RestoredHostSessionKernel {
             session_phase: self.session_phase,
             initialization_seed: self.initialization_seed,
             pending,
-            replay_attempts,
             queued_frames,
             next_pending_sequence: self.next_pending_sequence,
         })
@@ -607,10 +859,12 @@ fn duration_millis_u64(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        FramedMessage, HostRejection, HostSessionKernel, HostSessionKernelSnapshot,
-        InitializationSeed, ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest,
-        SessionPhase, prepare_replay_seed, synthesized_initialized_notification,
+        DispatchQueueOutcome, FramedMessage, HostRejection, HostSessionKernel,
+        HostSessionKernelSnapshot, InitializationSeed, PendingRequest, ProbeResolutionOutcome,
+        ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest, SessionPhase,
+        prepare_replay_seed, synthesized_initialized_notification,
     };
+    use crate::{ExecutionKnowledge, ProbeResolution, ReplayContract};
     use serde_json::json;
 
     #[test]
@@ -684,12 +938,11 @@ mod tests {
                 method: RpcMethod::tools_call(),
                 sequence: 3,
                 frame: pending_payload,
-                replay_contract: crate::ReplayContract::Convergent,
+                replay_contract: ReplayContract::Convergent,
+                execution_knowledge: ExecutionKnowledge::OutcomeUnknown,
+                replay_attempts: 2,
+                scheduled_disposition: None,
                 age_ms: 25,
-            }],
-            replay_attempts: vec![super::ReplayAttemptSnapshot {
-                request_id: RequestId::number(7),
-                attempts: 2,
             }],
             queued_frames: vec![queued_payload],
             next_pending_sequence: 9,
@@ -709,10 +962,6 @@ mod tests {
         assert_eq!(restored.next_pending_sequence, 9);
         assert_eq!(restored.pending.len(), 1);
         assert_eq!(restored.queued_frames.len(), 1);
-        assert_eq!(
-            restored.replay_attempts.get(&RequestId::number(7)).copied(),
-            Some(2)
-        );
         let pending = restored.pending.get(&RequestId::number(7));
         assert!(pending.is_some(), "expected pending request to round-trip");
         let pending = match pending {
@@ -721,7 +970,12 @@ mod tests {
         };
         assert_eq!(pending.sequence, 3);
         assert!(pending.method.is_tools_call());
-        assert_eq!(pending.replay_contract, crate::ReplayContract::Convergent);
+        assert_eq!(pending.replay_contract, ReplayContract::Convergent);
+        assert_eq!(pending.replay_attempts(), 2);
+        assert_eq!(
+            pending.execution_knowledge(),
+            ExecutionKnowledge::OutcomeUnknown
+        );
         assert!(
             pending.tool_call_meta.is_some(),
             "expected tool metadata to be reconstructed from replay snapshot"
@@ -730,14 +984,6 @@ mod tests {
 
     #[test]
     fn replay_requeue_drops_requests_that_exhaust_budget() {
-        let initialize = FramedMessage::parse(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_vec(),
-        );
-        assert!(initialize.is_ok());
-        let initialize = match initialize {
-            Ok(value) => value,
-            Err(_) => return,
-        };
         let diagnostics = FramedMessage::parse(
             br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"diagnostics","arguments":{"file_path":"/tmp/lib.rs"}}}"#.to_vec(),
         );
@@ -748,10 +994,15 @@ mod tests {
         };
 
         let mut kernel = HostSessionKernel::cold();
-        kernel.observe_client_frame(&initialize);
-        kernel.record_forwarded_request(&initialize, crate::ReplayContract::Convergent);
-        kernel.record_forwarded_request(&diagnostics, crate::ReplayContract::Convergent);
-        let _previous = kernel.replay_attempts.insert(RequestId::number(2), 1);
+        let dispatched = kernel.begin_request_dispatch(&diagnostics, ReplayContract::Convergent, 8);
+        assert!(dispatched.is_ok());
+        let first_recovery = kernel.requeue_pending_for_replay(ReplayBudget {
+            max_attempts: 1,
+            queue_capacity: 8,
+        });
+        assert!(first_recovery.rejected.is_empty());
+        let replay = kernel.pop_next_dispatch();
+        assert!(matches!(replay, Ok(DispatchQueueOutcome::Frame(_))));
 
         let outcome = kernel.requeue_pending_for_replay(ReplayBudget {
             max_attempts: 1,
@@ -763,5 +1014,182 @@ mod tests {
             HostRejection::ReplayBudgetExhausted
         );
         assert!(kernel.queue_is_empty());
+    }
+
+    #[test]
+    fn admission_rejects_duplicate_ids_and_bounds_pending_work() {
+        let Some(first) = tool_request(11, "first") else {
+            return;
+        };
+        let Some(second) = tool_request(12, "second") else {
+            return;
+        };
+        let mut kernel = HostSessionKernel::cold();
+
+        assert!(
+            kernel
+                .begin_request_dispatch(&first, ReplayContract::Convergent, 1)
+                .is_ok()
+        );
+        assert_eq!(
+            kernel.begin_request_dispatch(&first, ReplayContract::Convergent, 1),
+            Err(HostRejection::DuplicateRequestId)
+        );
+        assert_eq!(
+            kernel.begin_request_dispatch(&second, ReplayContract::Convergent, 1),
+            Err(HostRejection::PendingCapacityExhausted)
+        );
+
+        assert!(kernel.complete_request(&RequestId::number(11)).is_ok());
+        assert!(matches!(
+            kernel.complete_request(&RequestId::number(11)),
+            Err(HostRejection::RequestNotPending)
+        ));
+        assert!(
+            kernel
+                .begin_request_dispatch(&first, ReplayContract::Convergent, 1)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn recovery_obeys_contracts_and_blocks_younger_work_at_probes() {
+        let Some(convergent) = tool_request(21, "convergent") else {
+            return;
+        };
+        let Some(probed) = tool_request(22, "probed") else {
+            return;
+        };
+        let Some(forbidden) = tool_request(23, "forbidden") else {
+            return;
+        };
+        let Some(younger) = tool_request(24, "younger") else {
+            return;
+        };
+        let mut kernel = HostSessionKernel::cold();
+        assert!(
+            kernel
+                .begin_request_dispatch(&convergent, ReplayContract::Convergent, 8)
+                .is_ok()
+        );
+        assert!(
+            kernel
+                .begin_request_dispatch(&probed, ReplayContract::ProbeRequired, 8)
+                .is_ok()
+        );
+        assert!(
+            kernel
+                .begin_request_dispatch(&forbidden, ReplayContract::NeverReplay, 8)
+                .is_ok()
+        );
+        assert!(kernel.queue_client_frame(younger, 8).is_ok());
+
+        let outcome = kernel.requeue_pending_for_replay(ReplayBudget {
+            max_attempts: 2,
+            queue_capacity: 8,
+        });
+        assert_eq!(outcome.held_for_probe, vec![RequestId::number(22)]);
+        assert!(matches!(
+            outcome.rejected.as_slice(),
+            [rejected] if rejected.request_id == RequestId::number(23)
+                && rejected.reason == HostRejection::AmbiguousOutcome
+        ));
+        let convergent_pending = kernel.pending.get(&RequestId::number(21));
+        assert!(matches!(convergent_pending, Some(request) if request.replay_attempts() == 0));
+
+        assert!(matches!(
+            kernel.pop_next_dispatch(),
+            Ok(DispatchQueueOutcome::Frame(frame))
+                if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(21))
+        ));
+        assert!(matches!(
+            kernel.pop_next_dispatch(),
+            Ok(DispatchQueueOutcome::HeldForProbe { request_id })
+                if request_id == RequestId::number(22)
+        ));
+        let resolved =
+            kernel.resolve_probe(&RequestId::number(22), ProbeResolution::SafeToReplay, 2);
+        assert!(matches!(
+            resolved,
+            Ok(ProbeResolutionOutcome::ReplayAuthorized { request_id })
+                if request_id == RequestId::number(22)
+        ));
+        assert!(matches!(
+            kernel.pop_next_dispatch(),
+            Ok(DispatchQueueOutcome::Frame(frame))
+                if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(22))
+        ));
+        assert!(matches!(
+            kernel.pop_next_dispatch(),
+            Ok(DispatchQueueOutcome::Frame(frame))
+                if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(24))
+        ));
+        assert!(!kernel.pending.contains_key(&RequestId::number(23)));
+        assert!(matches!(
+            kernel
+                .pending
+                .get(&RequestId::number(22))
+                .map(PendingRequest::execution_knowledge),
+            Some(ExecutionKnowledge::InFlight)
+        ));
+    }
+
+    #[test]
+    fn probe_completion_and_late_terminal_outcomes_cannot_leak_replays() {
+        let Some(probed) = tool_request(31, "probed") else {
+            return;
+        };
+        let Some(convergent) = tool_request(32, "convergent") else {
+            return;
+        };
+        let mut kernel = HostSessionKernel::cold();
+        assert!(
+            kernel
+                .begin_request_dispatch(&probed, ReplayContract::ProbeRequired, 8)
+                .is_ok()
+        );
+        assert!(
+            kernel
+                .begin_request_dispatch(&convergent, ReplayContract::Convergent, 8)
+                .is_ok()
+        );
+        let outcome = kernel.requeue_pending_for_replay(ReplayBudget {
+            max_attempts: 1,
+            queue_capacity: 8,
+        });
+        assert_eq!(outcome.held_for_probe.len(), 1);
+
+        let resolved =
+            kernel.resolve_probe(&RequestId::number(31), ProbeResolution::AlreadyCompleted, 1);
+        assert!(matches!(resolved, Ok(ProbeResolutionOutcome::Completed(_))));
+        assert!(matches!(
+            kernel.pop_next_dispatch(),
+            Ok(DispatchQueueOutcome::Frame(frame))
+                if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(32))
+        ));
+
+        let second_loss = kernel.requeue_pending_for_replay(ReplayBudget {
+            max_attempts: 2,
+            queue_capacity: 8,
+        });
+        assert!(second_loss.rejected.is_empty());
+        assert!(!kernel.queue_is_empty());
+        assert!(kernel.complete_request(&RequestId::number(32)).is_ok());
+        assert!(kernel.queue_is_empty());
+        assert!(matches!(
+            kernel.complete_request(&RequestId::number(32)),
+            Err(HostRejection::RequestNotPending)
+        ));
+    }
+
+    fn tool_request(id: u64, name: &str) -> Option<FramedMessage> {
+        let payload = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}}
+        }))
+        .ok()?;
+        FramedMessage::parse(payload).ok()
     }
 }
