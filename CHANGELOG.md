@@ -15,18 +15,15 @@ Included in `1.1.0`:
 - reusable host-session kernel for initialize seed capture, pending request
   journaling, replay budgeting, and queue rebuild
 - snapshot-file helpers for host self-reexec handoff
-- typed JSON-RPC method and tool-name tokens for host, health, and telemetry
-  surfaces
 - generic JSON-to-porcelain rendering for doctrine-compliant default output
-- projection traits and derive macros for concise/full model-facing surfaces
-- shared testkit assertions for projection doctrine
-- publishable package metadata for the public three-crate workspace
+- retrofit of `adequate_rust_mcp` onto the shared host-session kernel
+- first `fidget_spinner` retrofit onto the shared kernel and render doctrine
 
 Still intentionally excluded:
 
 - final runtime adapter crates
 - a forced single worker transport shape
-- consumer-specific domain tools, routing, and worker transport
+- the deeper client/server infra lift reserved for a later release
 
 ## 1.0.0
 
