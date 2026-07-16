@@ -34,7 +34,8 @@ pub use host::{
 };
 pub use jsonrpc::{
     FrameLimit, FrameParseError, FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind,
-    RpcMethod, ToolCallMeta, ToolName, parse_tool_call_meta, read_frame, write_frame,
+    RpcMethod, ToolCallMeta, ToolName, parse_tool_call_meta, read_frame, read_frame_blocking,
+    write_frame, write_frame_blocking,
 };
 pub use normalize::{
     NumericParseError, PathNormalizeError, checked_u64_to_usize, normalize_local_path,

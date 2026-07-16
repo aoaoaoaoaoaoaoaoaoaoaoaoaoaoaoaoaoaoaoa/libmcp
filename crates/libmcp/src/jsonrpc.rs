@@ -540,10 +540,7 @@ where
         let payload_bytes = delimiter.unwrap_or(buffer.len());
         let next_len = line.len().checked_add(payload_bytes);
         if next_len.is_none_or(|length| length > limit.get()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("JSON-RPC frame exceeds {} byte limit", limit.get()),
-            ));
+            return Err(frame_limit_error(limit));
         }
         line.extend_from_slice(&buffer[..payload_bytes]);
         let consumed = delimiter.map_or(payload_bytes, |position| position + 1);
@@ -563,11 +560,69 @@ where
     }
 }
 
+/// Reads one line-delimited JSON-RPC frame from blocking I/O within an explicit byte limit.
+pub fn read_frame_blocking<R>(reader: &mut R, limit: FrameLimit) -> io::Result<FrameReadOutcome>
+where
+    R: io::BufRead,
+{
+    let mut line = Vec::<u8>::new();
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return if line.is_empty() {
+                Ok(FrameReadOutcome::EndOfStream)
+            } else {
+                Ok(FrameReadOutcome::Frame(line))
+            };
+        }
+
+        let delimiter = buffer.iter().position(|byte| *byte == b'\n');
+        let payload_bytes = delimiter.unwrap_or(buffer.len());
+        let next_len = line.len().checked_add(payload_bytes);
+        if next_len.is_none_or(|length| length > limit.get()) {
+            return Err(frame_limit_error(limit));
+        }
+        line.extend_from_slice(&buffer[..payload_bytes]);
+        let consumed = delimiter.map_or(payload_bytes, |position| position + 1);
+        reader.consume(consumed);
+
+        if delimiter.is_none() {
+            continue;
+        }
+        if line.last() == Some(&b'\r') {
+            let _carriage_return = line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        return Ok(FrameReadOutcome::Frame(line));
+    }
+}
+
 /// Writes one line-delimited JSON-RPC frame within an explicit byte limit.
 pub async fn write_frame<W>(writer: &mut W, payload: &[u8], limit: FrameLimit) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
+    validate_frame_payload(payload, limit)?;
+    writer.write_all(payload).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Writes one line-delimited JSON-RPC frame to blocking I/O within an explicit byte limit.
+pub fn write_frame_blocking<W>(writer: &mut W, payload: &[u8], limit: FrameLimit) -> io::Result<()>
+where
+    W: io::Write,
+{
+    validate_frame_payload(payload, limit)?;
+    writer.write_all(payload)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+fn validate_frame_payload(payload: &[u8], limit: FrameLimit) -> io::Result<()> {
     if payload.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -586,10 +641,14 @@ where
             "JSON-RPC frame payload must not contain a line delimiter",
         ));
     }
-    writer.write_all(payload).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
     Ok(())
+}
+
+fn frame_limit_error(limit: FrameLimit) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("JSON-RPC frame exceeds {} byte limit", limit.get()),
+    )
 }
 
 fn extract_path_hint_from_value(value: &Value) -> Option<String> {
@@ -661,7 +720,8 @@ fn normalize_path_hint(raw: &str) -> String {
 mod tests {
     use super::{
         FrameLimit, FrameParseError, FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind,
-        RpcMethod, ToolName, parse_tool_call_meta, read_frame, write_frame,
+        RpcMethod, ToolName, parse_tool_call_meta, read_frame, read_frame_blocking, write_frame,
+        write_frame_blocking,
     };
     use serde_json::{Number, json};
     use tokio::io::BufReader;
@@ -848,5 +908,27 @@ mod tests {
         assert!(
             matches!(oversized, Err(error) if error.kind() == std::io::ErrorKind::InvalidInput)
         );
+    }
+
+    #[test]
+    fn blocking_io_obeys_the_same_frame_bounds() {
+        let limit = match FrameLimit::try_new(5) {
+            Ok(limit) => limit,
+            Err(_) => return,
+        };
+        let mut reader = std::io::BufReader::new(&b"\n1234\r\n"[..]);
+        let outcome = read_frame_blocking(&mut reader, limit);
+        assert!(matches!(outcome, Ok(FrameReadOutcome::Frame(payload)) if payload == b"1234"));
+
+        let mut oversized = std::io::BufReader::new(&b"123456\n"[..]);
+        let rejected = read_frame_blocking(&mut oversized, limit);
+        assert!(matches!(rejected, Err(error) if error.kind() == std::io::ErrorKind::InvalidData));
+
+        let mut sink = Vec::new();
+        let written = write_frame_blocking(&mut sink, b"1234", limit);
+        assert!(written.is_ok());
+        assert_eq!(sink, b"1234\n");
+        let rejected = write_frame_blocking(&mut sink, b"123456", limit);
+        assert!(matches!(rejected, Err(error) if error.kind() == std::io::ErrorKind::InvalidInput));
     }
 }
