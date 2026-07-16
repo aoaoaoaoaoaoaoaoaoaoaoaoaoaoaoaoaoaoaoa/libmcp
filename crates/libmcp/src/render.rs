@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
+const MAX_PREVIEW_DEPTH: usize = 4;
+
 /// Output render mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
@@ -100,9 +102,9 @@ pub fn truncate_chars(raw: &str, limit: Option<usize>) -> TruncatedText {
             truncated: false,
         };
     };
-    let truncated = raw.chars().take(limit).collect::<String>();
-    let visible_len = truncated.chars().count();
-    if raw.chars().count() > visible_len {
+    let mut characters = raw.chars();
+    let truncated = characters.by_ref().take(limit).collect::<String>();
+    if characters.next().is_some() {
         TruncatedText {
             text: truncated,
             truncated: true,
@@ -249,9 +251,7 @@ fn render_top_level(value: &Value, config: JsonPorcelainConfig, lines: &mut Vec<
                 lines.push("empty object".to_owned());
                 return;
             }
-            let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
-            keys.sort_unstable();
-            for key in keys.into_iter().take(config.max_lines) {
+            for key in object.keys().take(config.max_lines) {
                 let preview = inline_preview(&object[key], config);
                 lines.push(format!(
                     "{}: {preview}",
@@ -277,25 +277,33 @@ fn render_top_level(value: &Value, config: JsonPorcelainConfig, lines: &mut Vec<
 }
 
 fn inline_preview(value: &Value, config: JsonPorcelainConfig) -> String {
+    inline_preview_at(value, config, 0)
+}
+
+fn inline_preview_at(value: &Value, config: JsonPorcelainConfig, depth: usize) -> String {
     let raw = match value {
         Value::Null => "null".to_owned(),
         Value::Bool(flag) => flag.to_string(),
         Value::Number(number) => number.to_string(),
         Value::String(text) => quote_string_bounded(text, config.max_inline_chars),
-        Value::Array(items) => preview_array(items, config),
-        Value::Object(object) => preview_object(object, config),
+        Value::Array(items) if depth >= MAX_PREVIEW_DEPTH && !items.is_empty() => "[…]".to_owned(),
+        Value::Object(object) if depth >= MAX_PREVIEW_DEPTH && !object.is_empty() => {
+            "{…}".to_owned()
+        }
+        Value::Array(items) => preview_array(items, config, depth),
+        Value::Object(object) => preview_object(object, config, depth),
     };
     truncate_fragment(raw.as_str(), config.max_inline_chars)
 }
 
-fn preview_array(items: &[Value], config: JsonPorcelainConfig) -> String {
+fn preview_array(items: &[Value], config: JsonPorcelainConfig, depth: usize) -> String {
     if items.is_empty() {
         return "[]".to_owned();
     }
     let mut parts = items
         .iter()
         .take(3)
-        .map(|item| inline_preview(item, config))
+        .map(|item| inline_preview_at(item, config, depth + 1))
         .collect::<Vec<_>>();
     if items.len() > 3 {
         parts.push(format!("+{} more", items.len() - 3));
@@ -303,20 +311,22 @@ fn preview_array(items: &[Value], config: JsonPorcelainConfig) -> String {
     format!("[{}]", parts.join(", "))
 }
 
-fn preview_object(object: &serde_json::Map<String, Value>, config: JsonPorcelainConfig) -> String {
+fn preview_object(
+    object: &serde_json::Map<String, Value>,
+    config: JsonPorcelainConfig,
+    depth: usize,
+) -> String {
     if object.is_empty() {
         return "{}".to_owned();
     }
-    let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
-    keys.sort_unstable();
-    let mut parts = keys
-        .into_iter()
+    let mut parts = object
+        .keys()
         .take(4)
         .map(|key| {
             format!(
                 "{}={}",
                 render_key(key, config.max_inline_chars),
-                inline_preview(&object[key], config)
+                inline_preview_at(&object[key], config, depth + 1)
             )
         })
         .collect::<Vec<_>>();
@@ -331,8 +341,9 @@ fn quote_string(text: &str) -> String {
 }
 
 fn quote_string_bounded(text: &str, limit: usize) -> String {
-    let mut prefix = text.chars().take(limit).collect::<Vec<_>>();
-    let complete = text.chars().count() == prefix.len();
+    let mut characters = text.chars();
+    let mut prefix = characters.by_ref().take(limit).collect::<Vec<_>>();
+    let complete = characters.next().is_none();
     if complete {
         let quoted = quote_string(&prefix.iter().collect::<String>());
         if quoted.chars().count() <= limit {
@@ -478,5 +489,12 @@ mod tests {
         assert!(scalar.chars().count() <= config.max_inline_chars());
         assert!(scalar.contains('…'));
         assert!(serde_json::from_str::<String>(&scalar).is_ok());
+
+        let mut nested = json!("leaf");
+        for _depth in 0..32 {
+            nested = json!({"next": nested});
+        }
+        let nested = render_json_porcelain(&nested, JsonPorcelainConfig::default());
+        assert!(nested.contains("{…}"));
     }
 }
