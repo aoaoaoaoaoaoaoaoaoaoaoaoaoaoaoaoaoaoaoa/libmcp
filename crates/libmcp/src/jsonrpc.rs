@@ -4,8 +4,9 @@ use crate::normalize::normalize_ascii_token;
 use crate::types::InvariantViolation;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
-use serde_json::{Number, Value};
+use serde_json::{Map, Number, Value};
 use std::{fmt, io};
+use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use url::Url;
 
@@ -180,51 +181,123 @@ impl<'de> Deserialize<'de> for ToolName {
     }
 }
 
-/// Parsed JSON-RPC frame.
+/// Rejection raised while validating a JSON-RPC frame.
+#[derive(Debug, Error)]
+pub enum FrameParseError {
+    /// The payload was not valid JSON.
+    #[error("invalid JSON-RPC frame payload: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+    /// The frame root was not an object.
+    #[error("JSON-RPC frame root must be an object")]
+    RootNotObject,
+    /// The protocol version was absent or not exactly `2.0`.
+    #[error("JSON-RPC frame must declare version 2.0")]
+    InvalidVersion,
+    /// A request or notification method was not a valid method token.
+    #[error("JSON-RPC request method must be a non-empty string")]
+    InvalidMethod,
+    /// A request or response ID was neither a number nor a string.
+    #[error("JSON-RPC request id must be a number or string")]
+    InvalidRequestId,
+    /// Request parameters were not structured.
+    #[error("JSON-RPC params must be an object or array")]
+    InvalidParams,
+    /// Request and response members formed no unambiguous envelope.
+    #[error("JSON-RPC envelope must be exactly one request, notification, or response")]
+    AmbiguousEnvelope,
+    /// A response error was not a valid JSON-RPC error object.
+    #[error("JSON-RPC error must contain an integer code and string message")]
+    InvalidError,
+}
+
+/// Parsed and validated JSON-RPC frame.
 #[derive(Debug, Clone)]
 pub struct FramedMessage {
-    /// Original payload bytes.
-    pub payload: Vec<u8>,
-    /// Parsed JSON value.
-    pub value: Value,
+    payload: Vec<u8>,
+    value: Value,
+    envelope: RpcEnvelopeKind,
 }
 
 impl FramedMessage {
-    /// Parses a JSON-RPC frame payload.
-    pub fn parse(payload: Vec<u8>) -> io::Result<Self> {
-        let value = serde_json::from_slice::<Value>(&payload).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid JSON-RPC frame payload: {error}"),
-            )
-        })?;
-        if !value.is_object() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSON-RPC frame root must be an object",
-            ));
-        }
-        Ok(Self { payload, value })
+    /// Parses and validates a JSON-RPC frame payload.
+    pub fn parse(payload: Vec<u8>) -> Result<Self, FrameParseError> {
+        let value = serde_json::from_slice::<Value>(&payload)?;
+        let object = value.as_object().ok_or(FrameParseError::RootNotObject)?;
+        let envelope = validate_envelope(object)?;
+        Ok(Self {
+            payload,
+            value,
+            envelope,
+        })
     }
 
-    /// Classifies the envelope shape.
+    /// Returns the original payload bytes.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Returns the validated JSON value.
+    #[must_use]
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// Returns the validated envelope shape.
     #[must_use]
     pub fn classify(&self) -> RpcEnvelopeKind {
-        let method = self
-            .value
-            .get("method")
-            .and_then(RpcMethod::from_json_value);
-        let request_id = self.value.get("id").and_then(RequestId::from_json_value);
-        match (method, request_id) {
-            (Some(method), Some(id)) => RpcEnvelopeKind::Request { id, method },
-            (Some(method), None) => RpcEnvelopeKind::Notification { method },
-            (None, Some(id)) => RpcEnvelopeKind::Response {
-                id,
-                has_error: self.value.get("error").is_some(),
-            },
-            (None, None) => RpcEnvelopeKind::Unknown,
-        }
+        self.envelope.clone()
     }
+}
+
+fn validate_envelope(object: &Map<String, Value>) -> Result<RpcEnvelopeKind, FrameParseError> {
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(FrameParseError::InvalidVersion);
+    }
+
+    if let Some(method_value) = object.get("method") {
+        if object.contains_key("result") || object.contains_key("error") {
+            return Err(FrameParseError::AmbiguousEnvelope);
+        }
+        if object
+            .get("params")
+            .is_some_and(|params| !params.is_object() && !params.is_array())
+        {
+            return Err(FrameParseError::InvalidParams);
+        }
+        let method =
+            RpcMethod::from_json_value(method_value).ok_or(FrameParseError::InvalidMethod)?;
+        return match object.get("id") {
+            Some(id) => RequestId::from_json_value(id)
+                .map(|id| RpcEnvelopeKind::Request { id, method })
+                .ok_or(FrameParseError::InvalidRequestId),
+            None => Ok(RpcEnvelopeKind::Notification { method }),
+        };
+    }
+
+    if object.contains_key("params") {
+        return Err(FrameParseError::AmbiguousEnvelope);
+    }
+    let id = object
+        .get("id")
+        .and_then(RequestId::from_json_value)
+        .ok_or(FrameParseError::InvalidRequestId)?;
+    let has_result = object.contains_key("result");
+    let has_error = object.contains_key("error");
+    if has_result == has_error {
+        return Err(FrameParseError::AmbiguousEnvelope);
+    }
+    if has_error && !object.get("error").is_some_and(valid_error_object) {
+        return Err(FrameParseError::InvalidError);
+    }
+    Ok(RpcEnvelopeKind::Response { id, has_error })
+}
+
+fn valid_error_object(error: &Value) -> bool {
+    error.as_object().is_some_and(|object| {
+        object.get("code").and_then(Value::as_i64).is_some()
+            && object.get("message").and_then(Value::as_str).is_some()
+    })
 }
 
 /// Coarse JSON-RPC envelope classification.
@@ -249,8 +322,6 @@ pub enum RpcEnvelopeKind {
         /// Whether the response carries a JSON-RPC error payload.
         has_error: bool,
     },
-    /// Frame shape did not match a recognized envelope.
-    Unknown,
 }
 
 /// Tool call metadata extracted from a generic `tools/call` frame.
@@ -279,7 +350,7 @@ pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &RpcMethod) -> Op
     if !rpc_method.is_tools_call() {
         return None;
     }
-    let params = frame.value.get("params")?.as_object()?;
+    let params = frame.value().get("params")?.as_object()?;
     let tool_name = ToolName::try_new(params.get("name")?.as_str()?).ok()?;
     let tool_arguments = params.get("arguments");
     let lsp_method = if tool_name.is_advanced_lsp_request() {
@@ -410,7 +481,8 @@ fn normalize_path_hint(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolName, parse_tool_call_meta,
+        FrameParseError, FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolName,
+        parse_tool_call_meta,
     };
     use serde_json::{Number, json};
 
@@ -454,6 +526,62 @@ mod tests {
         assert!(matches!(
             frame.classify(),
             RpcEnvelopeKind::Request { method, .. } if method.is_tools_call()
+        ));
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_malformed_envelopes() {
+        let cases = [
+            (br#"{"id":1,"method":"tools/call"}"#.as_slice(), "version"),
+            (
+                br#"{"jsonrpc":"1.0","id":1,"method":"tools/call"}"#.as_slice(),
+                "version",
+            ),
+            (
+                br#"{"jsonrpc":"2.0","id":null,"method":"tools/call"}"#.as_slice(),
+                "id",
+            ),
+            (
+                br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":7}"#.as_slice(),
+                "params",
+            ),
+            (
+                br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"x"}}"#
+                    .as_slice(),
+                "envelope",
+            ),
+            (
+                br#"{"jsonrpc":"2.0","id":1,"error":{"code":"bad","message":"x"}}"#.as_slice(),
+                "error",
+            ),
+        ];
+
+        for (payload, expected) in cases {
+            let error = FramedMessage::parse(payload.to_vec());
+            assert!(error.is_err(), "{expected} case was accepted");
+        }
+
+        let scalar = FramedMessage::parse(b"[]".to_vec());
+        assert!(matches!(scalar, Err(FrameParseError::RootNotObject)));
+    }
+
+    #[test]
+    fn seals_payload_value_and_envelope_together() {
+        let payload = br#"{"jsonrpc":"2.0","id":"r1","result":{"ok":true}}"#.to_vec();
+        let frame = FramedMessage::parse(payload.clone());
+        assert!(frame.is_ok());
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(_) => return,
+        };
+        assert_eq!(frame.payload(), payload);
+        assert_eq!(frame.value().get("result"), Some(&json!({"ok": true})));
+        assert!(matches!(
+            frame.classify(),
+            RpcEnvelopeKind::Response {
+                id,
+                has_error: false
+            } if id == RequestId::text("r1")
         ));
     }
 

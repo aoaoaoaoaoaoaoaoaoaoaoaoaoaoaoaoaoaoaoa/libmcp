@@ -236,7 +236,7 @@ impl HostSessionKernel {
                 request_id: request_id.clone(),
                 method: request.method.clone(),
                 sequence: request.sequence,
-                frame: request.frame.payload.clone(),
+                frame: request.frame.payload().to_vec(),
                 replay_contract: request.replay_contract,
                 age_ms: duration_millis_u64(request.started_at.elapsed()),
             })
@@ -244,7 +244,7 @@ impl HostSessionKernel {
         let queued_frames = self
             .queued_frames
             .iter()
-            .map(|frame| frame.payload.clone())
+            .map(|frame| frame.payload().to_vec())
             .collect::<Vec<_>>();
         let replay_attempts = self
             .replay_attempts
@@ -293,20 +293,19 @@ impl HostSessionKernel {
                 self.initialization_seed = Some(InitializationSeed {
                     initialize_request: SeededInitializeRequest {
                         id,
-                        payload: frame.payload.clone(),
+                        payload: frame.payload().to_vec(),
                     },
                     initialized_notification: prior_initialized,
                 });
             }
             RpcEnvelopeKind::Notification { method } if method.is_initialized_notification() => {
                 if let Some(seed) = self.initialization_seed.as_mut() {
-                    seed.initialized_notification = Some(frame.payload.clone());
+                    seed.initialized_notification = Some(frame.payload().to_vec());
                 }
             }
             RpcEnvelopeKind::Request { .. }
             | RpcEnvelopeKind::Notification { .. }
-            | RpcEnvelopeKind::Response { .. }
-            | RpcEnvelopeKind::Unknown => {}
+            | RpcEnvelopeKind::Response { .. } => {}
         }
     }
 
@@ -448,9 +447,7 @@ impl HostSessionKernel {
         while let Some(frame) = self.queued_frames.pop_front() {
             let should_drop = match frame.classify() {
                 RpcEnvelopeKind::Request { id, .. } => pending_ids.contains(&id),
-                RpcEnvelopeKind::Notification { .. }
-                | RpcEnvelopeKind::Response { .. }
-                | RpcEnvelopeKind::Unknown => false,
+                RpcEnvelopeKind::Notification { .. } | RpcEnvelopeKind::Response { .. } => false,
             };
             if !should_drop {
                 retained_queue.push_back(frame);
@@ -469,7 +466,8 @@ impl HostSessionKernelSnapshot {
         let now = StdInstant::now();
         let mut pending = HashMap::with_capacity(self.pending.len());
         for snapshot in self.pending {
-            let frame = FramedMessage::parse(snapshot.frame)?;
+            let frame = FramedMessage::parse(snapshot.frame)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             let started_at = now
                 .checked_sub(Duration::from_millis(snapshot.age_ms))
                 .unwrap_or(now);
@@ -495,7 +493,10 @@ impl HostSessionKernelSnapshot {
 
         let mut queued_frames = VecDeque::with_capacity(self.queued_frames.len());
         for payload in self.queued_frames {
-            queued_frames.push_back(FramedMessage::parse(payload)?);
+            queued_frames.push_back(
+                FramedMessage::parse(payload)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            );
         }
 
         let replay_attempts = self

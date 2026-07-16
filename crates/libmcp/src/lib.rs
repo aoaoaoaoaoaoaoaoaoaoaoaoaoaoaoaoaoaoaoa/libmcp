@@ -33,8 +33,8 @@ pub use host::{
     synthesized_initialized_notification, write_snapshot_file,
 };
 pub use jsonrpc::{
-    FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolCallMeta, ToolName,
-    parse_tool_call_meta, read_frame, write_frame,
+    FrameParseError, FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod,
+    ToolCallMeta, ToolName, parse_tool_call_meta, read_frame, write_frame,
 };
 pub use normalize::{
     NumericParseError, PathNormalizeError, normalize_ascii_token, normalize_local_path,
