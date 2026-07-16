@@ -438,7 +438,7 @@ fn method_snapshot(method: &RpcMethod, metrics: &MethodLedger) -> MethodTelemetr
 #[cfg(test)]
 mod tests {
     use super::{LifecycleState, OperationalLedger, RolloutState, WorkerHandshakePhase};
-    use crate::{Fault, FaultClass, FaultCode, Generation, RecoveryDirective, RpcMethod};
+    use crate::{Fault, FaultClass, FaultCode, Generation, RecoveryHint, RpcMethod};
 
     #[test]
     fn ledger_preserves_session_scope_and_deterministic_method_order() {
@@ -488,7 +488,7 @@ mod tests {
             Generation::genesis(),
             FaultClass::Transport,
             code,
-            RecoveryDirective::RestartAndReplay,
+            Some(RecoveryHint::ReplaceWorker),
             "worker pipe closed",
         );
         assert!(ledger.record_fault(Some(&method), fault).is_ok());

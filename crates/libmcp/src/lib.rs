@@ -20,7 +20,7 @@ pub mod replay;
 pub mod telemetry;
 pub mod types;
 
-pub use fault::{Fault, FaultClass, FaultCode, RecoveryDirective};
+pub use fault::{Fault, FaultClass, FaultCode, RecoveryHint};
 pub use health::{
     HealthSnapshot, LifecycleState, MethodTelemetry, OperationalLedger, OperationalMetricError,
     RolloutState, TelemetrySnapshot, TelemetryTotals, WorkerHandshakePhase,

@@ -1,4 +1,4 @@
-//! Fault taxonomy and recovery directives.
+//! Fault taxonomy and advisory process-recovery hints.
 
 use crate::types::Generation;
 use schemars::JsonSchema;
@@ -24,20 +24,28 @@ pub enum FaultClass {
     Replay,
     /// Rollout or binary handoff failure.
     Rollout,
+    /// Execution may have completed although no terminal outcome was observed.
+    AmbiguousOutcome,
     /// Internal invariant breach.
     Invariant,
 }
 
-/// Recovery directive for an operational fault.
+/// Advisory process-level recovery hint for an operational fault.
+///
+/// This hint never authorizes request replay. Request disposition remains a
+/// separate decision governed by execution knowledge and the invocation's
+/// replay contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum RecoveryDirective {
-    /// Retry on the current live process.
-    RetryInPlace,
-    /// Restart or roll forward, then replay if the replay contract allows it.
-    RestartAndReplay,
-    /// Abort the request and surface the failure.
-    AbortRequest,
+pub enum RecoveryHint {
+    /// Retain the current worker process.
+    KeepWorker,
+    /// Replace the current worker process.
+    ReplaceWorker,
+    /// Advance to the staged worker binary.
+    RollForward,
+    /// Terminate the stable host.
+    AbortHost,
 }
 
 /// A typed but extensible fault code.
@@ -89,8 +97,9 @@ pub struct Fault {
     pub class: FaultClass,
     /// Consumer-defined fine-grained code.
     pub code: FaultCode,
-    /// Recovery directive implied by this fault.
-    pub directive: RecoveryDirective,
+    /// Optional advisory process-recovery hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_hint: Option<RecoveryHint>,
     /// Human-facing detail.
     pub detail: String,
 }
@@ -102,14 +111,14 @@ impl Fault {
         generation: Generation,
         class: FaultClass,
         code: FaultCode,
-        directive: RecoveryDirective,
+        recovery_hint: Option<RecoveryHint>,
         detail: impl Into<String>,
     ) -> Self {
         Self {
             generation,
             class,
             code,
-            directive,
+            recovery_hint,
             detail: detail.into(),
         }
     }
