@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.2
+
+- add bounded blocking frame readers and writers with the same limits and
+  validation as the Tokio frame I/O surface
+
 ## 2.0.1
 
 - add the missing generic terminal-error transition to `OperationalLedger`,
