@@ -53,7 +53,7 @@ pub use replay::{
     ExecutionKnowledge, ExecutionTransitionError, ProbeResolution, ReplayAllowance, ReplayContract,
     RequestDisposition, request_disposition,
 };
-pub use telemetry::{TelemetryLog, ToolErrorDetail, ToolOutcome};
+pub use telemetry::{TelemetryFlushPolicy, TelemetryLog, ToolErrorDetail, ToolOutcome};
 pub use types::{Generation, InvariantViolation};
 
 pub use libmcp_derive::{SelectorProjection, ToolProjection};

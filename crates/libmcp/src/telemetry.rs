@@ -12,8 +12,22 @@ use std::{
     io,
     io::Write,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
 };
+
+static TELEMETRY_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Durability applied after each complete telemetry record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryFlushPolicy {
+    /// Return after appending to the operating-system page cache.
+    PageCache,
+    /// Flush language-level buffering after each record.
+    Flush,
+    /// Request data durability from the operating system after each record.
+    SyncData,
+}
 
 /// Tool completion outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -36,7 +50,7 @@ pub struct ToolErrorDetail {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 struct PathAggregate {
     request_count: u64,
     error_count: u64,
@@ -88,11 +102,23 @@ pub struct TelemetryLog {
     by_path: HashMap<String, PathAggregate>,
     emitted_tool_events: u64,
     snapshot_every: u64,
+    flush_policy: TelemetryFlushPolicy,
 }
 
 impl TelemetryLog {
     /// Opens or creates a telemetry log file.
-    pub fn new(path: &Path, repo_root: &Path, snapshot_every: u64) -> io::Result<Self> {
+    pub fn new(
+        path: &Path,
+        repo_root: &Path,
+        snapshot_every: u64,
+        flush_policy: TelemetryFlushPolicy,
+    ) -> io::Result<Self> {
+        if snapshot_every == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "telemetry snapshot interval must be non-zero",
+            ));
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -103,7 +129,8 @@ impl TelemetryLog {
             repo_root,
             by_path: HashMap::new(),
             emitted_tool_events: 0,
-            snapshot_every: snapshot_every.max(1),
+            snapshot_every,
+            flush_policy,
         })
     }
 
@@ -117,7 +144,7 @@ impl TelemetryLog {
         outcome: ToolOutcome,
         error: ToolErrorDetail,
     ) -> io::Result<()> {
-        let now = unix_ms_now();
+        let now = unix_ms_now()?;
         let request_id = request_id.to_json_value();
         let is_error = matches!(outcome, ToolOutcome::Error);
         let ToolErrorDetail {
@@ -144,21 +171,47 @@ impl TelemetryLog {
             error_kind,
             error_message,
         };
-        self.write_json_line(&record)?;
-
-        if let Some(path) = tool_meta.path_hint.as_ref() {
-            let aggregate = self.by_path.entry(path.clone()).or_default();
-            aggregate.request_count = aggregate.request_count.saturating_add(1);
-            aggregate.total_latency_ms = aggregate
+        let next_emitted = self
+            .emitted_tool_events
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("telemetry event counter exhausted u64"))?;
+        let updated_path = if let Some(path) = tool_meta.path_hint.as_ref() {
+            let aggregate = self.by_path.get(path).copied().unwrap_or_default();
+            let request_count = aggregate
+                .request_count
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("telemetry path counter exhausted u64"))?;
+            let total_latency_ms = aggregate
                 .total_latency_ms
-                .saturating_add(u128::from(latency_ms));
-            aggregate.max_latency_ms = aggregate.max_latency_ms.max(latency_ms);
-            if is_error {
-                aggregate.error_count = aggregate.error_count.saturating_add(1);
-            }
+                .checked_add(u128::from(latency_ms))
+                .ok_or_else(|| io::Error::other("telemetry latency total exhausted u128"))?;
+            let error_count = if is_error {
+                aggregate
+                    .error_count
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("telemetry error counter exhausted u64"))?
+            } else {
+                aggregate.error_count
+            };
+            Some((
+                path.clone(),
+                PathAggregate {
+                    request_count,
+                    error_count,
+                    total_latency_ms,
+                    max_latency_ms: aggregate.max_latency_ms.max(latency_ms),
+                },
+            ))
+        } else {
+            None
+        };
+
+        self.write_json_line(&record)?;
+        if let Some((path, aggregate)) = updated_path {
+            let _previous = self.by_path.insert(path, aggregate);
         }
 
-        self.emitted_tool_events = self.emitted_tool_events.saturating_add(1);
+        self.emitted_tool_events = next_emitted;
         if self.emitted_tool_events.is_multiple_of(self.snapshot_every) {
             self.write_hot_paths_snapshot()?;
         }
@@ -171,7 +224,7 @@ impl TelemetryLog {
             .by_path
             .iter()
             .map(|(path, aggregate)| hot_path_line(path.as_str(), aggregate))
-            .collect::<Vec<_>>();
+            .collect::<io::Result<Vec<_>>>()?;
         hottest.sort_by(|left, right| {
             right
                 .request_count
@@ -186,7 +239,7 @@ impl TelemetryLog {
             .iter()
             .filter(|(_, aggregate)| aggregate.request_count > 0)
             .map(|(path, aggregate)| hot_path_line(path.as_str(), aggregate))
-            .collect::<Vec<_>>();
+            .collect::<io::Result<Vec<_>>>()?;
         slowest.sort_by(|left, right| {
             right
                 .avg_latency_ms
@@ -198,7 +251,7 @@ impl TelemetryLog {
 
         let snapshot = HotPathsSnapshotRecord {
             event: "hot_paths_snapshot",
-            ts_unix_ms: unix_ms_now(),
+            ts_unix_ms: unix_ms_now()?,
             repo_root: self.repo_root.clone(),
             total_tool_events: self.emitted_tool_events,
             hottest_paths: hottest,
@@ -211,42 +264,76 @@ impl TelemetryLog {
         let encoded = serde_json::to_vec(value).map_err(|error| {
             io::Error::other(format!("telemetry serialization failed: {error}"))
         })?;
-        self.sink.write_all(&encoded)?;
-        self.sink.write_all(b"\n")?;
-        Ok(())
+        let mut record = encoded;
+        record.push(b'\n');
+        let process_lock = TELEMETRY_WRITE_LOCK
+            .lock()
+            .map_err(|_| io::Error::other("telemetry append lock poisoned"))?;
+        lock_file_append(&self.sink)?;
+        let write_result = self
+            .sink
+            .write_all(&record)
+            .and_then(|()| match self.flush_policy {
+                TelemetryFlushPolicy::PageCache => Ok(()),
+                TelemetryFlushPolicy::Flush => self.sink.flush(),
+                TelemetryFlushPolicy::SyncData => self.sink.sync_data(),
+            });
+        let unlock_result = unlock_file_append(&self.sink);
+        drop(process_lock);
+        write_result.and(unlock_result)
     }
 }
 
-fn hot_path_line(path: &str, aggregate: &PathAggregate) -> HotPathLine {
+fn hot_path_line(path: &str, aggregate: &PathAggregate) -> io::Result<HotPathLine> {
     let avg_latency_ms = if aggregate.request_count == 0 {
         0
     } else {
         let avg = aggregate.total_latency_ms / u128::from(aggregate.request_count);
-        u64::try_from(avg).unwrap_or(u64::MAX)
+        u64::try_from(avg).map_err(|_| io::Error::other("telemetry average latency exceeds u64"))?
     };
-    HotPathLine {
+    Ok(HotPathLine {
         path: PathBuf::from(path).display().to_string(),
         request_count: aggregate.request_count,
         error_count: aggregate.error_count,
         avg_latency_ms,
         max_latency_ms: aggregate.max_latency_ms,
-    }
+    })
 }
 
-fn unix_ms_now() -> u64 {
+fn unix_ms_now() -> io::Result<u64> {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO);
+        .map_err(|_| io::Error::other("system clock is before the Unix epoch"))?;
     let millis = since_epoch.as_millis();
-    u64::try_from(millis).unwrap_or(u64::MAX)
+    u64::try_from(millis).map_err(|_| io::Error::other("Unix timestamp milliseconds exceed u64"))
+}
+
+#[cfg(unix)]
+fn lock_file_append(file: &std::fs::File) -> io::Result<()> {
+    rustix::fs::flock(file, rustix::fs::FlockOperation::LockExclusive).map_err(io::Error::from)
+}
+
+#[cfg(unix)]
+fn unlock_file_append(file: &std::fs::File) -> io::Result<()> {
+    rustix::fs::flock(file, rustix::fs::FlockOperation::Unlock).map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+fn lock_file_append(_file: &std::fs::File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn unlock_file_append(_file: &std::fs::File) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TelemetryLog, ToolErrorDetail, ToolOutcome};
+    use super::{TelemetryFlushPolicy, TelemetryLog, ToolErrorDetail, ToolOutcome};
     use crate::jsonrpc::{RequestId, ToolCallMeta, ToolName};
     use serde_json::Value;
-    use std::fs;
+    use std::{fs, thread};
     use tempfile::tempdir;
 
     #[test]
@@ -258,7 +345,12 @@ mod tests {
             Err(_) => return,
         };
         let log_path = dir.path().join("telemetry.jsonl");
-        let log = TelemetryLog::new(log_path.as_path(), dir.path(), 1);
+        let log = TelemetryLog::new(
+            log_path.as_path(),
+            dir.path(),
+            1,
+            TelemetryFlushPolicy::PageCache,
+        );
         assert!(log.is_ok());
         let mut log = match log {
             Ok(value) => value,
@@ -305,5 +397,91 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(second["event"], "hot_paths_snapshot");
+    }
+
+    #[test]
+    fn concurrent_log_instances_emit_only_intact_records() {
+        const WRITERS: u64 = 8;
+        const RECORDS_PER_WRITER: u64 = 50;
+
+        let dir = match tempdir() {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let log_path = dir.path().join("concurrent.jsonl");
+        let mut writers = Vec::new();
+        for writer in 0..WRITERS {
+            let log_path = log_path.clone();
+            let repo_root = dir.path().to_owned();
+            writers.push(thread::spawn(move || {
+                let mut log = match TelemetryLog::new(
+                    &log_path,
+                    &repo_root,
+                    u64::MAX,
+                    TelemetryFlushPolicy::PageCache,
+                ) {
+                    Ok(log) => log,
+                    Err(_) => return false,
+                };
+                let tool_name = match ToolName::try_new("concurrent") {
+                    Ok(name) => name,
+                    Err(_) => return false,
+                };
+                let meta = ToolCallMeta {
+                    tool_name,
+                    lsp_method: None,
+                    path_hint: None,
+                };
+                for record in 0..RECORDS_PER_WRITER {
+                    let request_id = RequestId::text(format!("{writer}-{record}"));
+                    if log
+                        .record_tool_completion(
+                            &request_id,
+                            &meta,
+                            record,
+                            0,
+                            ToolOutcome::Ok,
+                            ToolErrorDetail::default(),
+                        )
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
+                true
+            }));
+        }
+        for writer in writers {
+            assert!(matches!(writer.join(), Ok(true)));
+        }
+
+        let text = match fs::read_to_string(log_path) {
+            Ok(text) => text,
+            Err(_) => return,
+        };
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len() as u64, WRITERS * RECORDS_PER_WRITER);
+        assert!(
+            lines
+                .iter()
+                .all(|line| serde_json::from_str::<Value>(line).is_ok())
+        );
+    }
+
+    #[test]
+    fn telemetry_configuration_rejects_zero_interval() {
+        let dir = match tempdir() {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        assert!(
+            TelemetryLog::new(
+                &dir.path().join("telemetry.jsonl"),
+                dir.path(),
+                0,
+                TelemetryFlushPolicy::PageCache,
+            )
+            .is_err()
+        );
     }
 }
