@@ -43,19 +43,47 @@ pub enum SessionPhase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SeededInitializeRequest {
     /// Original request identifier.
-    pub id: RequestId,
+    id: RequestId,
     /// Original serialized JSON-RPC frame.
-    pub payload: Vec<u8>,
+    payload: Vec<u8>,
+}
+
+impl SeededInitializeRequest {
+    /// Returns the original public request identifier.
+    #[must_use]
+    pub const fn id(&self) -> &RequestId {
+        &self.id
+    }
+
+    /// Returns the exact original JSON-RPC payload.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
 }
 
 /// Captured initialization seed for worker replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InitializationSeed {
     /// Original initialize request.
-    pub initialize_request: SeededInitializeRequest,
-    /// Best-effort initialized notification payload.
+    initialize_request: SeededInitializeRequest,
+    /// Exact initialized notification observed from the public client.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub initialized_notification: Option<Vec<u8>>,
+    initialized_notification: Option<Vec<u8>>,
+}
+
+impl InitializationSeed {
+    /// Returns the exact public initialize request.
+    #[must_use]
+    pub const fn initialize_request(&self) -> &SeededInitializeRequest {
+        &self.initialize_request
+    }
+
+    /// Returns the exact initialized notification when the client sent one.
+    #[must_use]
+    pub fn initialized_notification(&self) -> Option<&[u8]> {
+        self.initialized_notification.as_deref()
+    }
 }
 
 /// Common host-side request rejections.
@@ -184,13 +212,25 @@ impl PendingRequest {
     }
 }
 
-/// Pending request plus the number of replay attempts consumed so far.
+/// Completed invocation metadata.
 #[derive(Debug, Clone)]
 pub struct CompletedPendingRequest {
     /// Pending request metadata and original frame.
-    pub request: PendingRequest,
-    /// Replay attempts consumed for this request.
-    pub replay_attempts: u8,
+    request: PendingRequest,
+}
+
+impl CompletedPendingRequest {
+    /// Returns the completed invocation metadata.
+    #[must_use]
+    pub const fn request(&self) -> &PendingRequest {
+        &self.request
+    }
+
+    /// Consumes the completion and returns its invocation metadata.
+    #[must_use]
+    pub fn into_request(self) -> PendingRequest {
+        self.request
+    }
 }
 
 /// Result of taking the next recovery-ordered dispatch.
@@ -667,11 +707,7 @@ impl HostSessionKernel {
             }
         }
         self.remove_queued_request(request_id);
-        let replay_attempts = request.replay_attempts;
-        Ok(CompletedPendingRequest {
-            request,
-            replay_attempts,
-        })
+        Ok(CompletedPendingRequest { request })
     }
 
     /// Rebuilds the replay queue after worker failure.
@@ -814,12 +850,8 @@ impl HostSessionKernel {
                     .pending
                     .remove(request_id)
                     .ok_or(HostRejection::InvalidExecutionState)?;
-                let replay_attempts = request.replay_attempts;
                 Ok(ProbeResolutionOutcome::Completed(Box::new(
-                    CompletedPendingRequest {
-                        request,
-                        replay_attempts,
-                    },
+                    CompletedPendingRequest { request },
                 )))
             }
             RequestDisposition::RejectReplayExhausted => {
@@ -1114,7 +1146,7 @@ fn validate_session_snapshot(
 }
 
 /// Prepares a replay seed based on the current session phase.
-pub fn prepare_replay_seed(
+fn prepare_replay_seed(
     session_phase: SessionPhase,
     initialization_seed: Option<&InitializationSeed>,
 ) -> Result<Option<InitializationSeed>, HostRejection> {

@@ -159,10 +159,14 @@ fn downstream_public_initialization_never_invents_client_events() -> Result<(), 
     assert_eq!(kernel.session_phase(), SessionPhase::Initializing);
     let _completed = kernel.complete_response(&response)?;
     assert_eq!(kernel.session_phase(), SessionPhase::AwaitingInitialized);
-    assert!(matches!(kernel.replay_seed()?, Some(seed) if seed.initialized_notification.is_none()));
+    assert!(
+        matches!(kernel.replay_seed()?, Some(seed) if seed.initialized_notification().is_none())
+    );
     kernel.observe_client_frame(&initialized)?;
     assert_eq!(kernel.session_phase(), SessionPhase::Live);
-    assert!(matches!(kernel.replay_seed()?, Some(seed) if seed.initialized_notification.is_some()));
+    assert!(
+        matches!(kernel.replay_seed()?, Some(seed) if seed.initialized_notification().is_some())
+    );
     Ok(())
 }
 
