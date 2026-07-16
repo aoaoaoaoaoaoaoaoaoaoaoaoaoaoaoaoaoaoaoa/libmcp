@@ -48,25 +48,25 @@ pub enum RolloutState {
     Reloading,
 }
 
-/// Base health snapshot for a hardened MCP host or worker.
+/// Stable-host health view for one public MCP session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HealthSnapshot {
     /// Current lifecycle state.
     pub state: LifecycleState,
     /// Active worker handshake state, distinct from host lifecycle.
     pub worker_handshake: WorkerHandshakePhase,
-    /// Current generation.
+    /// Active worker generation within the public session.
     pub generation: Generation,
-    /// Process uptime in milliseconds.
+    /// Current host-process uptime in milliseconds.
     pub uptime_ms: u64,
-    /// Consecutive failures since the last healthy request.
+    /// Recovery-triggering faults since the last successful public response.
     pub consecutive_failures: u32,
-    /// Total restart count.
+    /// Worker replacements within the public session.
     pub restart_count: u64,
     /// Rollout state when the runtime exposes it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollout: Option<RolloutState>,
-    /// Most recent fault, if any.
+    /// Most recent operational fault in the public session, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_fault: Option<Fault>,
 }
@@ -239,26 +239,26 @@ impl MethodTelemetry {
     }
 }
 
-/// Base telemetry snapshot for a hardened MCP runtime.
+/// Stable-host telemetry view for one public MCP session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TelemetrySnapshot {
-    /// Process uptime in milliseconds.
+    /// Current host-process uptime in milliseconds.
     pub uptime_ms: u64,
     /// Current lifecycle state.
     pub state: LifecycleState,
     /// Active worker handshake state.
     pub worker_handshake: WorkerHandshakePhase,
-    /// Current generation.
+    /// Active worker generation within the public session.
     pub generation: Generation,
-    /// Consecutive failures since last clean success.
+    /// Recovery-triggering faults since the last successful public response.
     pub consecutive_failures: u32,
-    /// Total restart count.
+    /// Worker replacements within the public session.
     pub restart_count: u64,
     /// Aggregate totals.
     pub totals: TelemetryTotals,
     /// Per-method aggregates.
     pub methods: Vec<MethodTelemetry>,
-    /// Most recent fault, if any.
+    /// Most recent operational fault in the public session, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_fault: Option<Fault>,
 }

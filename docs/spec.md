@@ -275,8 +275,8 @@ scope:
 
 Lifecycle state and worker handshake phase are related but not synonymous. A
 host MAY remain responsive and accept bounded queued traffic while a replacement
-worker is still starting; health output MUST not collapse those facts into a
-false `Ready`.
+worker is still starting. The consumer supplies those observed runtime facts and
+MUST NOT collapse them into a false `Ready`.
 
 ## Telemetry Semantics
 
@@ -326,6 +326,7 @@ Consumers MUST:
 - own public and worker transport effects
 - define worker startup, warm-up, and rollout policy
 - preserve session-scoped health and telemetry state across coordinated reexec
+- report host lifecycle and worker handshake phase as separate observed facts
 - shape domain faults without exposing raw backend spew by default
 - define actual concise and full model-facing projections
 - protect sensitive request and telemetry content according to local policy
