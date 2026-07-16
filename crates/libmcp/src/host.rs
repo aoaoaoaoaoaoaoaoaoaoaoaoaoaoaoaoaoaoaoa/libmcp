@@ -14,10 +14,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs, io,
-    path::{Path, PathBuf},
-    time::{Duration, Instant as StdInstant, SystemTime, UNIX_EPOCH},
+    fs::{self, File},
+    io::{self, Read as _, Write as _},
+    path::Path,
+    time::{Duration, Instant as StdInstant},
 };
+use tempfile::{Builder as TempfileBuilder, TempPath};
 use thiserror::Error;
 
 /// Exact snapshot format understood by this release line.
@@ -1105,34 +1107,46 @@ pub fn prepare_replay_seed(
     }
 }
 
-/// Computes a temporary snapshot path for host self-reexec state.
-#[must_use]
-pub fn snapshot_temp_path(prefix: &str) -> PathBuf {
-    let stamp = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis(),
-        Err(_) => 0,
-    };
-    std::env::temp_dir().join(format!("{prefix}-{}-{stamp}.json", std::process::id()))
+/// Owned, private one-shot snapshot file prepared for process replacement.
+#[derive(Debug)]
+pub struct SnapshotCapsule {
+    path: TempPath,
 }
 
-/// Serializes a snapshot to a temporary file for a later exec handoff.
-pub fn write_snapshot_file<T>(prefix: &str, snapshot: &T) -> io::Result<PathBuf>
+impl SnapshotCapsule {
+    /// Returns the path to publish to the replacement process.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.path.as_ref()
+    }
+}
+
+/// Serializes, flushes, and seals a private snapshot capsule for exec handoff.
+pub fn write_snapshot_file<T>(prefix: &str, snapshot: &T) -> io::Result<SnapshotCapsule>
 where
     T: Serialize,
 {
+    validate_snapshot_prefix(prefix)?;
     let serialized = serde_json::to_vec(snapshot).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("failed to serialize host reexec snapshot: {error}"),
         )
     })?;
-    let path = snapshot_temp_path(prefix);
-    fs::write(&path, serialized)?;
-    Ok(path)
+    let mut file = TempfileBuilder::new()
+        .prefix(prefix)
+        .suffix(".json")
+        .tempfile_in(std::env::temp_dir())?;
+    file.write_all(&serialized)?;
+    file.flush()?;
+    file.as_file().sync_all()?;
+    Ok(SnapshotCapsule {
+        path: file.into_temp_path(),
+    })
 }
 
 /// Loads and deletes a snapshot file referenced by an environment variable.
-pub fn load_snapshot_file_from_env<T>(env_var: &str) -> io::Result<Option<T>>
+pub fn load_snapshot_file_from_env<T>(env_var: &str, max_bytes: usize) -> io::Result<Option<T>>
 where
     T: DeserializeOwned,
 {
@@ -1140,30 +1154,110 @@ where
     let Some(raw_path) = raw_path.filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    let path = PathBuf::from(raw_path);
-    let serialized = fs::read(&path)?;
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    serde_json::from_slice(&serialized)
-        .map(Some)
-        .map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to decode host reexec snapshot: {error}"),
-            )
-        })
+    load_snapshot_file(Path::new(&raw_path), max_bytes).map(Some)
 }
 
-/// Best-effort cleanup for a temporary snapshot file.
-pub fn remove_snapshot_file(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+fn load_snapshot_file<T>(path: &Path, max_bytes: usize) -> io::Result<T>
+where
+    T: DeserializeOwned,
+{
+    if max_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot byte limit must be non-zero",
+        ));
     }
+    let mut file = open_private_snapshot(path)?;
+    let metadata = file.metadata()?;
+
+    #[cfg(unix)]
+    fs::remove_file(path)?;
+
+    if metadata.len() > max_bytes as u64 {
+        #[cfg(not(unix))]
+        fs::remove_file(path)?;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("host snapshot exceeds {max_bytes} byte limit"),
+        ));
+    }
+
+    let read_limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut serialized = Vec::with_capacity(metadata.len() as usize);
+    let mut bounded_file = io::Read::take(&mut file, read_limit);
+    let _bytes_read = bounded_file.read_to_end(&mut serialized)?;
+
+    #[cfg(not(unix))]
+    fs::remove_file(path)?;
+
+    if serialized.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("host snapshot exceeds {max_bytes} byte limit"),
+        ));
+    }
+    serde_json::from_slice(&serialized).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to decode host reexec snapshot: {error}"),
+        )
+    })
+}
+
+fn validate_snapshot_prefix(prefix: &str) -> io::Result<()> {
+    if prefix.is_empty()
+        || prefix.len() > 64
+        || !prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot prefix must be 1-64 portable filename characters",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_private_snapshot(path: &Path) -> io::Result<File> {
+    use rustix::{
+        fs::{Mode, OFlags, open},
+        process::getuid,
+    };
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    let file = File::from(descriptor);
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != getuid().as_raw()
+        || metadata.permissions().mode().trailing_zeros() < 6
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "snapshot capsule must be a private regular file owned by this user",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_private_snapshot(path: &Path) -> io::Result<File> {
+    let file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "snapshot capsule must be a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
@@ -1176,7 +1270,7 @@ mod tests {
         DispatchQueueOutcome, FramedMessage, HostRejection, HostSessionKernel,
         HostSessionKernelSnapshot, InitializationSeed, PendingRequest, ProbeResolutionOutcome,
         ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest, SessionPhase, SnapshotError,
-        SnapshotLimits, prepare_replay_seed,
+        SnapshotLimits, load_snapshot_file, prepare_replay_seed, write_snapshot_file,
     };
     use crate::{ExecutionKnowledge, ProbeResolution, ReplayContract};
     use serde_json::json;
@@ -1402,6 +1496,80 @@ mod tests {
             reversed.restore(limits),
             Err(SnapshotError::Invariant(_))
         ));
+    }
+
+    #[test]
+    fn snapshot_capsules_are_private_bounded_and_one_shot() {
+        let value = json!({"format": 1, "secret": "state"});
+        let capsule = write_snapshot_file("libmcp-test-", &value);
+        assert!(capsule.is_ok());
+        let capsule = match capsule {
+            Ok(capsule) => capsule,
+            Err(_) => return,
+        };
+        let path = capsule.path().to_owned();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let metadata = std::fs::metadata(&path);
+            assert!(
+                matches!(metadata, Ok(metadata) if metadata.permissions().mode().trailing_zeros() >= 6)
+            );
+        }
+
+        let restored = load_snapshot_file::<serde_json::Value>(&path, 1024);
+        assert!(matches!(restored, Ok(restored) if restored == value));
+        assert!(!path.exists());
+        drop(capsule);
+
+        let disposable = write_snapshot_file("libmcp-test-", &value);
+        assert!(disposable.is_ok());
+        let disposable = match disposable {
+            Ok(capsule) => capsule,
+            Err(_) => return,
+        };
+        let disposable_path = disposable.path().to_owned();
+        drop(disposable);
+        assert!(!disposable_path.exists());
+
+        assert!(write_snapshot_file("../escape", &value).is_err());
+    }
+
+    #[test]
+    fn rejected_snapshot_capsules_are_still_consumed() {
+        let capsule = write_snapshot_file("libmcp-test-", &json!({"large": "payload"}));
+        let capsule = match capsule {
+            Ok(capsule) => capsule,
+            Err(_) => return,
+        };
+        let path = capsule.path().to_owned();
+        let rejected = load_snapshot_file::<serde_json::Value>(&path, 1);
+        assert!(matches!(rejected, Err(error) if error.kind() == std::io::ErrorKind::InvalidData));
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_loader_refuses_symlink_handoffs() {
+        use std::os::unix::fs::symlink;
+
+        let capsule = write_snapshot_file("libmcp-test-", &json!({"state": true}));
+        let capsule = match capsule {
+            Ok(capsule) => capsule,
+            Err(_) => return,
+        };
+        let directory = tempfile::tempdir();
+        let directory = match directory {
+            Ok(directory) => directory,
+            Err(_) => return,
+        };
+        let link = directory.path().join("capsule.json");
+        assert!(symlink(capsule.path(), &link).is_ok());
+        assert!(load_snapshot_file::<serde_json::Value>(&link, 1024).is_err());
+        assert!(link.exists());
+        assert!(capsule.path().exists());
     }
 
     #[test]

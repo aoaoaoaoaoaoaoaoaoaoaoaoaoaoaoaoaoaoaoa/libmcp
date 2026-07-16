@@ -16,13 +16,14 @@ libmcp-derive = { version = "2.0.0-alpha.1", path = "../libmcp-derive" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 url.workspace = true
 
-[dev-dependencies]
-tempfile.workspace = true
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [lints]
 workspace = true

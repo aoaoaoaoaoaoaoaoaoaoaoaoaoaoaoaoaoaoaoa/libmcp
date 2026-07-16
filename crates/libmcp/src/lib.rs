@@ -29,9 +29,8 @@ pub use host::{
     CompletedPendingRequest, DispatchQueueOutcome, HostRejection, HostSessionKernel,
     HostSessionKernelSnapshot, InitializationSeed, PendingRequest, ProbeResolutionOutcome,
     RejectedReplay, ReplayBudget, ReplayRequeueOutcome, SNAPSHOT_FORMAT_VERSION,
-    SeededInitializeRequest, SessionPhase, SnapshotError, SnapshotLimits,
-    load_snapshot_file_from_env, prepare_replay_seed, remove_snapshot_file, snapshot_temp_path,
-    write_snapshot_file,
+    SeededInitializeRequest, SessionPhase, SnapshotCapsule, SnapshotError, SnapshotLimits,
+    load_snapshot_file_from_env, prepare_replay_seed, write_snapshot_file,
 };
 pub use jsonrpc::{
     FrameLimit, FrameParseError, FrameReadOutcome, FramedMessage, RequestId, RpcEnvelopeKind,

@@ -272,6 +272,7 @@ name = "libmcp"
 version = "2.0.0-alpha.1"
 dependencies = [
  "libmcp-derive",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
