@@ -1,10 +1,32 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
 
-The workspace is now on the `2.0.0-alpha.1` development line. The next release
-will enforce the machine-grade continuity and presentation contracts in
-`docs/spec.md` before declaring stability.
+Machine-grade continuity and presentation release. `docs/spec.md` is now the
+normative public contract.
+
+Included in `2.0.0`:
+
+- event-exact public-session state separated from worker generations and
+  private worker handshakes
+- explicit execution knowledge, invocation-local replay contracts, probe
+  barriers, ordered recovery, and actual-dispatch attempt accounting
+- bounded pending and queue admission with queued client work distinguished
+  from authorized replay
+- sealed JSON-RPC identities, duplicate-member rejection, and bounded frame IO
+- exact-version, atomically validated, private one-shot reexec capsules
+- advisory process recovery hints severed from request replay authority
+- session-scoped health and telemetry with terminal outcomes distinct from
+  recovery-fault incidents and portable record-atomic JSONL emission
+- enforced projection policies, downstream-safe derive macros, bounded
+  porcelain rendering, and exact input normalization
+- downstream churn and derive conformance in `libmcp-testkit`
+- canonical `$mcp-bootstrap` doctrine aligned with the released contract
+
+Breaking changes from `1.1.0` include sealed invariant-bearing fields, the
+execution/replay state algebra, explicit queued-versus-replay outcomes,
+advisory `RecoveryHint`, corrected telemetry counters, and a single
+materialized projection-policy authority.
 
 ## 1.1.0
 

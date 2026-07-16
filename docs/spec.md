@@ -2,9 +2,10 @@
 
 ## Status
 
-This document defines the normative target contract for the next `libmcp`
-release. The current implementation may not yet satisfy every `MUST`; those
-requirements are release gates for the rectification work.
+This document defines the normative contract for `libmcp` `2.0.0`. Every
+library-owned `MUST` is a release gate backed by executable conformance
+evidence; consumer-owned `MUST` statements define the boundary the library
+cannot cross without domain or transport knowledge.
 
 `libmcp` is the reusable operational spine for hardened MCP servers. It is not
 an application framework, a domain schema repository, or a mandate that every

@@ -7,7 +7,7 @@ servers:
 
 - typed replay contracts and operational faults
 - JSON-RPC request identity, frame IO, and tool-call metadata helpers
-- a durable host-session kernel for worker churn and host self-reexec handoff
+- a bounded host-session kernel for worker churn and coordinated self-reexec
 - shared health snapshots, telemetry snapshots, and append-only JSONL events
 - porcelain-by-default rendering, projection traits, and derive macros
 - model-facing normalization helpers
@@ -19,12 +19,14 @@ operational doctrine, but it is not part of the runtime crate API.
 
 ## Status
 
-`libmcp` is developing the machine-grade `2.0` contract defined in
-`docs/spec.md`. The workspace currently identifies itself as `2.0.0-alpha.1`
-until every normative guarantee has executable conformance evidence.
+`libmcp` `2.0.0` implements the machine-grade contract defined in
+`docs/spec.md`. The public workspace contains `libmcp`, `libmcp-derive`, and
+`libmcp-testkit`.
 
-The last published release is `1.1.0`. The public workspace contains
-`libmcp`, `libmcp-derive`, and `libmcp-testkit`.
+The continuity spine distinguishes public sessions, host epochs, worker
+generations, execution knowledge, and per-invocation replay contracts. Process
+recovery never confers replay authority; exact downstream conformance tests
+exercise churn, probe barriers, bounds, snapshots, and initialization.
 
 This release does not prescribe a single worker transport or ship runtime
 adapter crates. Consumers keep domain tools, backend routing, and worker
