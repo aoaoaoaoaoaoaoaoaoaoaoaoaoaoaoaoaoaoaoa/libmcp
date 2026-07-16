@@ -2,7 +2,8 @@
 
 use crate::{
     jsonrpc::{
-        FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolCallMeta, parse_tool_call_meta,
+        FrameParseError, FramedMessage, RequestId, RpcEnvelopeKind, RpcMethod, ToolCallMeta,
+        parse_tool_call_meta,
     },
     replay::{
         ExecutionKnowledge, ProbeResolution, ReplayAllowance, ReplayContract, RequestDisposition,
@@ -17,6 +18,10 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant as StdInstant, SystemTime, UNIX_EPOCH},
 };
+use thiserror::Error;
+
+/// Exact snapshot format understood by this release line.
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 1;
 
 /// Public MCP initialization phase, independent of worker readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -251,6 +256,7 @@ struct PendingRequestSnapshot {
 /// Serializable kernel snapshot for host self-reexec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostSessionKernelSnapshot {
+    format_version: u16,
     /// Current public session phase.
     pub session_phase: SessionPhase,
     /// Captured initialize state, if any.
@@ -263,19 +269,73 @@ pub struct HostSessionKernelSnapshot {
     pub next_pending_sequence: u64,
 }
 
+/// Explicit bounds applied before snapshot state is hydrated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotLimits {
+    max_pending: usize,
+    max_queued: usize,
+    max_frame_bytes: usize,
+    max_replay_attempts: u8,
+}
+
+impl SnapshotLimits {
+    /// Constructs snapshot restoration limits.
+    pub fn try_new(
+        max_pending: usize,
+        max_queued: usize,
+        max_frame_bytes: usize,
+        max_replay_attempts: u8,
+    ) -> Result<Self, crate::InvariantViolation> {
+        if max_frame_bytes == 0 {
+            return Err(crate::InvariantViolation::new(
+                "snapshot frame limit must be non-zero",
+            ));
+        }
+        Ok(Self {
+            max_pending,
+            max_queued,
+            max_frame_bytes,
+            max_replay_attempts,
+        })
+    }
+}
+
+/// Snapshot rejection raised before any live kernel is hydrated.
+#[derive(Debug, Error)]
+pub enum SnapshotError {
+    /// The producer used a different snapshot schema.
+    #[error("unsupported host snapshot format {found}")]
+    UnsupportedVersion {
+        /// Version found in the capsule.
+        found: u16,
+    },
+    /// Serialized state exceeded an explicit restoration bound.
+    #[error("host snapshot exceeds {resource} capacity")]
+    Capacity {
+        /// Bounded resource that was exhausted.
+        resource: &'static str,
+    },
+    /// A serialized frame failed JSON-RPC validation.
+    #[error("invalid frame in host snapshot: {0}")]
+    InvalidFrame(#[from] FrameParseError),
+    /// Cross-field snapshot state contradicted a kernel invariant.
+    #[error("invalid host snapshot: {0}")]
+    Invariant(&'static str),
+}
+
 /// Restored host-session kernel state ready to hydrate a live runtime.
 #[derive(Debug, Clone)]
-pub struct RestoredHostSessionKernel {
+struct RestoredHostSessionKernel {
     /// Current public session phase.
-    pub session_phase: SessionPhase,
+    session_phase: SessionPhase,
     /// Captured initialize state, if any.
-    pub initialization_seed: Option<InitializationSeed>,
+    initialization_seed: Option<InitializationSeed>,
     /// Live pending requests.
-    pub pending: HashMap<RequestId, PendingRequest>,
+    pending: HashMap<RequestId, PendingRequest>,
     /// Backlog of client frames waiting on worker readiness.
-    pub queued_frames: VecDeque<FramedMessage>,
+    queued_frames: VecDeque<FramedMessage>,
     /// Next pending sequence number.
-    pub next_pending_sequence: u64,
+    next_pending_sequence: u64,
 }
 
 impl RestoredHostSessionKernel {
@@ -311,7 +371,7 @@ impl HostSessionKernel {
 
     /// Hydrates the kernel from restored state.
     #[must_use]
-    pub fn from_restored(restored: RestoredHostSessionKernel) -> Self {
+    fn from_restored(restored: RestoredHostSessionKernel) -> Self {
         Self {
             session_phase: restored.session_phase,
             initialization_seed: restored.initialization_seed,
@@ -325,7 +385,7 @@ impl HostSessionKernel {
     #[must_use]
     pub fn snapshot(&self) -> HostSessionKernelSnapshot {
         let initialization_seed = self.initialization_seed.clone();
-        let pending = self
+        let mut pending = self
             .pending
             .iter()
             .map(|(request_id, request)| PendingRequestSnapshot {
@@ -340,12 +400,14 @@ impl HostSessionKernel {
                 age_ms: duration_millis_u64(request.started_at.elapsed()),
             })
             .collect::<Vec<_>>();
+        pending.sort_by_key(|request| request.sequence);
         let queued_frames = self
             .queued_frames
             .iter()
             .map(|frame| frame.payload().to_vec())
             .collect::<Vec<_>>();
         HostSessionKernelSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
             session_phase: self.session_phase,
             initialization_seed,
             pending,
@@ -762,13 +824,58 @@ impl HostSessionKernel {
 }
 
 impl HostSessionKernelSnapshot {
-    /// Restores a live host-session state from the serialized snapshot.
-    pub fn restore(self) -> io::Result<RestoredHostSessionKernel> {
+    /// Validates the complete capsule and restores one live kernel atomically.
+    pub fn restore(self, limits: SnapshotLimits) -> Result<HostSessionKernel, SnapshotError> {
+        if self.format_version != SNAPSHOT_FORMAT_VERSION {
+            return Err(SnapshotError::UnsupportedVersion {
+                found: self.format_version,
+            });
+        }
+        if self.pending.len() > limits.max_pending {
+            return Err(SnapshotError::Capacity {
+                resource: "pending request",
+            });
+        }
+        if self.queued_frames.len() > limits.max_queued {
+            return Err(SnapshotError::Capacity {
+                resource: "queued frame",
+            });
+        }
+
         let now = StdInstant::now();
         let mut pending = HashMap::with_capacity(self.pending.len());
+        let mut sequences = HashSet::<u64>::with_capacity(self.pending.len());
         for snapshot in self.pending {
-            let frame = FramedMessage::parse(snapshot.frame)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if snapshot.frame.len() > limits.max_frame_bytes {
+                return Err(SnapshotError::Capacity {
+                    resource: "frame bytes",
+                });
+            }
+            if snapshot.replay_attempts > limits.max_replay_attempts {
+                return Err(SnapshotError::Capacity {
+                    resource: "replay attempt",
+                });
+            }
+            if !sequences.insert(snapshot.sequence)
+                || snapshot.sequence >= self.next_pending_sequence
+            {
+                return Err(SnapshotError::Invariant(
+                    "pending sequences must be unique and below the next sequence",
+                ));
+            }
+            validate_scheduled_disposition(&snapshot)?;
+            let frame = FramedMessage::parse(snapshot.frame)?;
+            match frame.classify() {
+                RpcEnvelopeKind::Request { id, method }
+                    if id == snapshot.request_id && method == snapshot.method => {}
+                RpcEnvelopeKind::Request { .. }
+                | RpcEnvelopeKind::Notification { .. }
+                | RpcEnvelopeKind::Response { .. } => {
+                    return Err(SnapshotError::Invariant(
+                        "pending identity diverges from its immutable frame",
+                    ));
+                }
+            }
             let started_at = now
                 .checked_sub(Duration::from_millis(snapshot.age_ms))
                 .unwrap_or(now);
@@ -788,28 +895,193 @@ impl HostSessionKernelSnapshot {
                 },
             );
             if previous.is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "duplicate request id in host reexec snapshot",
+                return Err(SnapshotError::Invariant(
+                    "duplicate request id in host snapshot",
                 ));
             }
         }
 
         let mut queued_frames = VecDeque::with_capacity(self.queued_frames.len());
+        let mut queued_ids = HashSet::<RequestId>::new();
+        let mut scheduled_seen = HashSet::<RequestId>::new();
+        let mut last_recovery_sequence = None::<u64>;
+        let mut reached_client_backlog = false;
         for payload in self.queued_frames {
-            queued_frames.push_back(
-                FramedMessage::parse(payload)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-            );
+            if payload.len() > limits.max_frame_bytes {
+                return Err(SnapshotError::Capacity {
+                    resource: "frame bytes",
+                });
+            }
+            let frame = FramedMessage::parse(payload)?;
+            if let RpcEnvelopeKind::Request { id, .. } = frame.classify() {
+                if !queued_ids.insert(id.clone()) {
+                    return Err(SnapshotError::Invariant(
+                        "duplicate request id in queued snapshot frames",
+                    ));
+                }
+                if let Some(request) = pending.get(&id) {
+                    if reached_client_backlog
+                        || request.scheduled_disposition.is_none()
+                        || request.frame.payload() != frame.payload()
+                        || last_recovery_sequence
+                            .is_some_and(|sequence| sequence >= request.sequence)
+                    {
+                        return Err(SnapshotError::Invariant(
+                            "recovery queue identity or order is invalid",
+                        ));
+                    }
+                    last_recovery_sequence = Some(request.sequence);
+                    let _inserted = scheduled_seen.insert(id);
+                } else {
+                    reached_client_backlog = true;
+                }
+            } else {
+                reached_client_backlog = true;
+            }
+            queued_frames.push_back(frame);
+        }
+        if pending.iter().any(|(id, request)| {
+            request.scheduled_disposition.is_some() && !scheduled_seen.contains(id)
+        }) {
+            return Err(SnapshotError::Invariant(
+                "scheduled recovery request is absent from the queue",
+            ));
         }
 
-        Ok(RestoredHostSessionKernel {
-            session_phase: self.session_phase,
-            initialization_seed: self.initialization_seed,
-            pending,
-            queued_frames,
-            next_pending_sequence: self.next_pending_sequence,
-        })
+        validate_session_snapshot(
+            self.session_phase,
+            self.initialization_seed.as_ref(),
+            &pending,
+            limits.max_frame_bytes,
+        )?;
+
+        Ok(HostSessionKernel::from_restored(
+            RestoredHostSessionKernel {
+                session_phase: self.session_phase,
+                initialization_seed: self.initialization_seed,
+                pending,
+                queued_frames,
+                next_pending_sequence: self.next_pending_sequence,
+            },
+        ))
+    }
+}
+
+fn validate_scheduled_disposition(snapshot: &PendingRequestSnapshot) -> Result<(), SnapshotError> {
+    let valid = match snapshot.scheduled_disposition {
+        None => matches!(
+            snapshot.execution_knowledge,
+            ExecutionKnowledge::InFlight | ExecutionKnowledge::OutcomeUnknown
+        ),
+        Some(RequestDisposition::Replay) => {
+            snapshot.execution_knowledge == ExecutionKnowledge::OutcomeUnknown
+                && matches!(
+                    snapshot.replay_contract,
+                    ReplayContract::Convergent | ReplayContract::ProbeRequired
+                )
+        }
+        Some(RequestDisposition::HoldForProbe) => {
+            snapshot.execution_knowledge == ExecutionKnowledge::OutcomeUnknown
+                && snapshot.replay_contract == ReplayContract::ProbeRequired
+        }
+        Some(
+            RequestDisposition::FirstDispatch
+            | RequestDisposition::AwaitTerminal
+            | RequestDisposition::Completed
+            | RequestDisposition::CompleteFromProbe
+            | RequestDisposition::RejectAmbiguousOutcome
+            | RequestDisposition::RejectReplayExhausted
+            | RequestDisposition::RejectUnexpectedProbeResolution,
+        ) => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(SnapshotError::Invariant(
+            "pending execution state and scheduled disposition disagree",
+        ))
+    }
+}
+
+fn validate_session_snapshot(
+    phase: SessionPhase,
+    seed: Option<&InitializationSeed>,
+    pending: &HashMap<RequestId, PendingRequest>,
+    max_frame_bytes: usize,
+) -> Result<(), SnapshotError> {
+    let mut pending_initializes = pending
+        .iter()
+        .filter(|(_, request)| request.method.is_initialize());
+    let pending_initialize = pending_initializes.next();
+    if pending_initializes.next().is_some() {
+        return Err(SnapshotError::Invariant(
+            "snapshot contains multiple initialize invocations",
+        ));
+    }
+    let Some(seed) = seed else {
+        if phase == SessionPhase::Cold && pending_initialize.is_none() {
+            return Ok(());
+        }
+        return Err(SnapshotError::Invariant(
+            "session phase requires an initialization seed",
+        ));
+    };
+    if seed.initialize_request.payload.len() > max_frame_bytes
+        || seed
+            .initialized_notification
+            .as_ref()
+            .is_some_and(|payload| payload.len() > max_frame_bytes)
+    {
+        return Err(SnapshotError::Capacity {
+            resource: "initialization frame bytes",
+        });
+    }
+    let initialize = FramedMessage::parse(seed.initialize_request.payload.clone())?;
+    if !matches!(
+        initialize.classify(),
+        RpcEnvelopeKind::Request { id, method }
+            if id == seed.initialize_request.id && method.is_initialize()
+    ) {
+        return Err(SnapshotError::Invariant(
+            "initialization seed request identity is invalid",
+        ));
+    }
+    if let Some(notification_payload) = &seed.initialized_notification {
+        let notification = FramedMessage::parse(notification_payload.clone())?;
+        if !matches!(
+            notification.classify(),
+            RpcEnvelopeKind::Notification { method } if method.is_initialized_notification()
+        ) {
+            return Err(SnapshotError::Invariant(
+                "initialized seed frame is not the client notification",
+            ));
+        }
+    }
+
+    let phase_valid = match phase {
+        SessionPhase::Cold => {
+            pending_initialize.is_none() && seed.initialized_notification.is_none()
+        }
+        SessionPhase::Initializing => {
+            seed.initialized_notification.is_none()
+                && pending_initialize.is_some_and(|(id, request)| {
+                    id == &seed.initialize_request.id
+                        && request.frame.payload() == seed.initialize_request.payload.as_slice()
+                })
+        }
+        SessionPhase::AwaitingInitialized => {
+            pending_initialize.is_none() && seed.initialized_notification.is_none()
+        }
+        SessionPhase::Live => {
+            pending_initialize.is_none() && seed.initialized_notification.is_some()
+        }
+    };
+    if phase_valid {
+        Ok(())
+    } else {
+        Err(SnapshotError::Invariant(
+            "public session phase contradicts initialization state",
+        ))
     }
 }
 
@@ -903,8 +1175,8 @@ mod tests {
     use super::{
         DispatchQueueOutcome, FramedMessage, HostRejection, HostSessionKernel,
         HostSessionKernelSnapshot, InitializationSeed, PendingRequest, ProbeResolutionOutcome,
-        ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest, SessionPhase,
-        prepare_replay_seed,
+        ReplayBudget, RequestId, RpcMethod, SeededInitializeRequest, SessionPhase, SnapshotError,
+        SnapshotLimits, prepare_replay_seed,
     };
     use crate::{ExecutionKnowledge, ProbeResolution, ReplayContract};
     use serde_json::json;
@@ -979,6 +1251,7 @@ mod tests {
         };
 
         let snapshot = HostSessionKernelSnapshot {
+            format_version: super::SNAPSHOT_FORMAT_VERSION,
             session_phase: SessionPhase::Live,
             initialization_seed: Some(InitializationSeed {
                 initialize_request: SeededInitializeRequest {
@@ -1006,7 +1279,11 @@ mod tests {
             next_pending_sequence: 9,
         };
 
-        let restored = snapshot.restore();
+        let limits = match SnapshotLimits::try_new(8, 8, 1024 * 1024, 3) {
+            Ok(limits) => limits,
+            Err(_) => return,
+        };
+        let restored = snapshot.restore(limits);
         assert!(
             restored.is_ok(),
             "expected restore to succeed: {restored:?}"
@@ -1038,6 +1315,93 @@ mod tests {
             pending.tool_call_meta.is_some(),
             "expected tool metadata to be reconstructed from replay snapshot"
         );
+    }
+
+    #[test]
+    fn snapshot_restore_rejects_version_identity_bounds_and_phase_corruption() {
+        let Some(request) = tool_request(71, "snapshot") else {
+            return;
+        };
+        let mut kernel = HostSessionKernel::cold();
+        assert!(
+            kernel
+                .begin_request_dispatch(&request, ReplayContract::Convergent, 4)
+                .is_ok()
+        );
+        let snapshot = kernel.snapshot();
+        let limits = match SnapshotLimits::try_new(4, 4, 1024, 2) {
+            Ok(limits) => limits,
+            Err(_) => return,
+        };
+
+        let mut wrong_version = snapshot.clone();
+        wrong_version.format_version = 99;
+        assert!(matches!(
+            wrong_version.restore(limits),
+            Err(SnapshotError::UnsupportedVersion { found: 99 })
+        ));
+
+        let mut divergent_identity = snapshot.clone();
+        divergent_identity.pending[0].request_id = RequestId::number(72);
+        assert!(matches!(
+            divergent_identity.restore(limits),
+            Err(SnapshotError::Invariant(_))
+        ));
+
+        let mut excessive_attempts = snapshot.clone();
+        excessive_attempts.pending[0].replay_attempts = 3;
+        assert!(matches!(
+            excessive_attempts.restore(limits),
+            Err(SnapshotError::Capacity {
+                resource: "replay attempt"
+            })
+        ));
+
+        let mut impossible_phase = snapshot;
+        impossible_phase.session_phase = SessionPhase::Live;
+        assert!(matches!(
+            impossible_phase.restore(limits),
+            Err(SnapshotError::Invariant(_))
+        ));
+    }
+
+    #[test]
+    fn snapshot_restore_validates_scheduled_recovery_order() {
+        let Some(first) = tool_request(81, "first") else {
+            return;
+        };
+        let Some(second) = tool_request(82, "second") else {
+            return;
+        };
+        let mut kernel = HostSessionKernel::cold();
+        assert!(
+            kernel
+                .begin_request_dispatch(&first, ReplayContract::Convergent, 4)
+                .is_ok()
+        );
+        assert!(
+            kernel
+                .begin_request_dispatch(&second, ReplayContract::Convergent, 4)
+                .is_ok()
+        );
+        let outcome = kernel.requeue_pending_for_replay(ReplayBudget {
+            max_attempts: 2,
+            queue_capacity: 4,
+        });
+        assert!(outcome.rejected.is_empty());
+        let snapshot = kernel.snapshot();
+        let limits = match SnapshotLimits::try_new(4, 4, 1024, 2) {
+            Ok(limits) => limits,
+            Err(_) => return,
+        };
+        assert!(snapshot.clone().restore(limits).is_ok());
+
+        let mut reversed = snapshot;
+        reversed.queued_frames.reverse();
+        assert!(matches!(
+            reversed.restore(limits),
+            Err(SnapshotError::Invariant(_))
+        ));
     }
 
     #[test]
