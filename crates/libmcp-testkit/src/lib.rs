@@ -69,7 +69,7 @@ impl ChurnHarness {
     /// Takes one recovery-ordered dispatch and records actual redispatches.
     pub fn dispatch_next(&mut self) -> Result<DispatchQueueOutcome, HostRejection> {
         let outcome = self.kernel.pop_next_dispatch()?;
-        if let DispatchQueueOutcome::Frame(frame) = &outcome {
+        if let DispatchQueueOutcome::Replay(frame) = &outcome {
             self.dispatched.push(frame.clone());
         }
         Ok(outcome)

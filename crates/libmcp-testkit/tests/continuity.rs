@@ -41,7 +41,7 @@ fn downstream_recovery_obeys_contract_order_and_actual_attempt_accounting()
 
     assert!(matches!(
         harness.dispatch_next()?,
-        DispatchQueueOutcome::Frame(frame)
+        DispatchQueueOutcome::Replay(frame)
             if request_id(&frame).as_ref() == Some(&RequestId::number(1))
     ));
     assert!(matches!(
@@ -57,7 +57,7 @@ fn downstream_recovery_obeys_contract_order_and_actual_attempt_accounting()
         harness.resolve_probe(&RequestId::number(2), ProbeResolution::SafeToReplay, 1)?;
     assert!(matches!(
         harness.dispatch_next()?,
-        DispatchQueueOutcome::Frame(frame)
+        DispatchQueueOutcome::Replay(frame)
             if request_id(&frame).as_ref() == Some(&RequestId::number(2))
     ));
     assert!(matches!(
@@ -126,7 +126,7 @@ fn downstream_snapshot_roundtrip_preserves_recovery_and_rejects_versions()
     let mut restored = decoded.restore(limits)?;
     assert!(matches!(
         restored.pop_next_dispatch()?,
-        DispatchQueueOutcome::Frame(frame)
+        DispatchQueueOutcome::Replay(frame)
             if request_id(&frame).as_ref() == Some(&RequestId::number(21))
     ));
     assert!(matches!(

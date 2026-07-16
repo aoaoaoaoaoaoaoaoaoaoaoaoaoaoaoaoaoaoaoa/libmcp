@@ -236,8 +236,13 @@ impl CompletedPendingRequest {
 /// Result of taking the next recovery-ordered dispatch.
 #[derive(Debug, Clone)]
 pub enum DispatchQueueOutcome {
-    /// One frame has crossed the kernel's dispatch boundary.
-    Frame(FramedMessage),
+    /// A replay-authorized invocation crossed the kernel dispatch boundary.
+    Replay(FramedMessage),
+    /// Client work was dequeued but has not crossed a dispatch boundary.
+    ///
+    /// Requests in this variant still require domain routing, an explicit
+    /// replay contract, and [`HostSessionKernel::begin_request_dispatch`].
+    ClientFrame(FramedMessage),
     /// An older invocation blocks the queue pending consumer evidence.
     HeldForProbe {
         /// Public request identifier awaiting a probe.
@@ -534,21 +539,22 @@ impl HostSessionKernel {
         Ok(())
     }
 
-    /// Takes the next dispatch in recovery order.
+    /// Takes the next queue entry in recovery order.
     ///
-    /// Taking a replay crosses the kernel dispatch boundary and consumes its
-    /// attempt. A held probe blocks all younger work.
+    /// A [`DispatchQueueOutcome::Replay`] crosses the kernel dispatch boundary
+    /// and consumes its attempt. A [`DispatchQueueOutcome::ClientFrame`] has
+    /// only been dequeued for routing. A held probe blocks all younger work.
     pub fn pop_next_dispatch(&mut self) -> Result<DispatchQueueOutcome, HostRejection> {
         let Some(frame) = self.queued_frames.front().cloned() else {
             return Ok(DispatchQueueOutcome::Empty);
         };
         let RpcEnvelopeKind::Request { id, .. } = frame.classify() else {
             let _removed = self.queued_frames.pop_front();
-            return Ok(DispatchQueueOutcome::Frame(frame));
+            return Ok(DispatchQueueOutcome::ClientFrame(frame));
         };
         let Some(request) = self.pending.get_mut(&id) else {
             let _removed = self.queued_frames.pop_front();
-            return Ok(DispatchQueueOutcome::Frame(frame));
+            return Ok(DispatchQueueOutcome::ClientFrame(frame));
         };
 
         match request.scheduled_disposition {
@@ -566,7 +572,7 @@ impl HostSessionKernel {
                     .ok_or(HostRejection::ReplayBudgetExhausted)?;
                 request.scheduled_disposition = None;
                 let _removed = self.queued_frames.pop_front();
-                Ok(DispatchQueueOutcome::Frame(frame))
+                Ok(DispatchQueueOutcome::Replay(frame))
             }
             Some(
                 RequestDisposition::FirstDispatch
@@ -1653,7 +1659,7 @@ mod tests {
         });
         assert!(first_recovery.rejected.is_empty());
         let replay = kernel.pop_next_dispatch();
-        assert!(matches!(replay, Ok(DispatchQueueOutcome::Frame(_))));
+        assert!(matches!(replay, Ok(DispatchQueueOutcome::Replay(_))));
 
         let outcome = kernel.requeue_pending_for_replay(ReplayBudget {
             max_attempts: 1,
@@ -1807,7 +1813,7 @@ mod tests {
 
         assert!(matches!(
             kernel.pop_next_dispatch(),
-            Ok(DispatchQueueOutcome::Frame(frame))
+            Ok(DispatchQueueOutcome::Replay(frame))
                 if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(21))
         ));
         assert!(matches!(
@@ -1824,12 +1830,12 @@ mod tests {
         ));
         assert!(matches!(
             kernel.pop_next_dispatch(),
-            Ok(DispatchQueueOutcome::Frame(frame))
+            Ok(DispatchQueueOutcome::Replay(frame))
                 if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(22))
         ));
         assert!(matches!(
             kernel.pop_next_dispatch(),
-            Ok(DispatchQueueOutcome::Frame(frame))
+            Ok(DispatchQueueOutcome::ClientFrame(frame))
                 if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(24))
         ));
         assert!(!kernel.pending.contains_key(&RequestId::number(23)));
@@ -1872,7 +1878,7 @@ mod tests {
         assert!(matches!(resolved, Ok(ProbeResolutionOutcome::Completed(_))));
         assert!(matches!(
             kernel.pop_next_dispatch(),
-            Ok(DispatchQueueOutcome::Frame(frame))
+            Ok(DispatchQueueOutcome::Replay(frame))
                 if matches!(frame.classify(), crate::RpcEnvelopeKind::Request { id, .. } if id == RequestId::number(32))
         ));
 
