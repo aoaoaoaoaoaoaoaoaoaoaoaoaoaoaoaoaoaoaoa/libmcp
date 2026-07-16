@@ -49,7 +49,10 @@ pub use render::{
     DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,
     collapse_inline_whitespace, render_json_porcelain, with_presentation_properties,
 };
-pub use replay::ReplayContract;
+pub use replay::{
+    ExecutionKnowledge, ExecutionTransitionError, ProbeResolution, ReplayAllowance, ReplayContract,
+    RequestDisposition, request_disposition,
+};
 pub use telemetry::{TelemetryLog, ToolErrorDetail, ToolOutcome};
 pub use types::{Generation, InvariantViolation};
 
