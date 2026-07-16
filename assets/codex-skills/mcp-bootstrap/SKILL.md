@@ -28,10 +28,12 @@ Read:
 
 Default pattern:
 
-- a stable host owns the public MCP transport, session state, request IDs,
-  replay policy, rollout, and user-facing fault shaping
+- a stable host owns the public MCP transport, event-exact session state,
+  request identities, execution knowledge, rollout, and user-facing faults
 - a disposable worker owns fragile runtime dependencies and tool execution
-- each request surface defines explicitly whether replay is safe
+- each routed invocation receives an explicit replay contract before dispatch
+- process recovery and request replay remain orthogonal decisions
+- queued client work is not dispatch-authorized work
 - health, telemetry, and recovery tests land before feature sprawl
 - nontrivial tools default to `render=porcelain`
 - porcelain output should avoid JSON unless the underlying data is irreducibly
@@ -49,8 +51,9 @@ Read:
 
 Retrofitting order:
 
-- separate durable transport and session ownership from fragile execution
-- define replay classes and typed faults before adding retries
+- separate the public session, host epoch, and worker generation
+- define execution knowledge, invocation replay contracts, and typed faults
+  before adding retries
 - replace ad hoc dumps with porcelain-by-default output
 - replace pretty-printed JSON with intentional text renderers; use compact
   table renderers for rows and reserve JSON-shaped porcelain for cases where no
@@ -65,6 +68,8 @@ Retrofitting order:
 
 - Prefer a host/worker split for long-lived MCPs.
 - Never auto-replay side-effecting requests unless safety is explicit in code.
+- Never treat worker restart or a fault hint as replay authority.
+- Never synthesize public initialization events the client did not send.
 - Re-open the reference docs when details matter; do not rely on memory.
 - Treat this skill as a pointer to `libmcp` patterns and docs, not an
   independent spec.

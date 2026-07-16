@@ -3,11 +3,19 @@
 Use this checklist when reviewing a `libmcp` consumer.
 
 - Does a stable host own the public session?
+- Are the public session, host epoch, and worker generation named separately?
 - Is the public session backed by the shared host-session kernel rather than
   ad hoc initialize/reexec glue?
-- Is worker fragility isolated behind an explicit replay policy?
-- Are replay contracts typed and local to the request surface?
-- Are faults typed and connected to recovery semantics?
+- Is public initialization driven only by exact observed client events?
+- Does every routed invocation receive a replay contract before dispatch?
+- Does the host distinguish `NotDispatched`, `InFlight`, `Completed`, and
+  `OutcomeUnknown`?
+- Do queued client frames remain distinct from replay-authorized dispatches?
+- Are replay attempts charged only on actual redispatch?
+- Does `ProbeRequired` remain blocked until explicit evidence arrives?
+- Does `NeverReplay` produce an explicit ambiguous-outcome error?
+- Are process recovery and request disposition independent?
+- Are faults typed, with process hints kept advisory?
 - Do tool surfaces cross an explicit projection boundary rather than serializing
   raw domain/store structs directly?
 - Do nontrivial tools default to porcelain output?
@@ -22,7 +30,13 @@ Use this checklist when reviewing a `libmcp` consumer.
   justified?
 - Is structured JSON still available where exact consumers need it?
 - Are inputs normalized where the semantics are still unambiguous?
-- Are health and telemetry available?
-- Is event telemetry append-only and useful for postmortem analysis?
-- Does the recovery test matrix cover the failure modes actually observed?
+- Does health distinguish host lifecycle from worker handshake phase?
+- Do session-scoped health and telemetry survive churn and coordinated reexec?
+- Are terminal errors distinct from nonterminal recovery faults?
+- Is event telemetry append-only, record-atomic under concurrent writers, and
+  explicit about flush durability?
+- Are reexec snapshots private, bounded, one-shot, version-exact, and validated
+  before hydration?
+- Does the recovery matrix cover loss before dispatch, during execution, after
+  completion, probe barriers, queue exhaustion, and corrupt reexec handoff?
 - Is the installed `$mcp-bootstrap` skill sourced from this repository?

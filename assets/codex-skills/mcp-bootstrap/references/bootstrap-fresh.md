@@ -7,25 +7,33 @@ Use this when the MCP can still adopt the hard posture directly.
 Long-lived MCPs should separate durable session ownership from fragile backend
 execution.
 
-- The host owns the MCP transport, initialization state, request IDs, replay
-  policy, rollout, and user-facing error shaping.
+- The host owns the public MCP transport, event-exact initialization state,
+  request identities, execution knowledge, rollout, and user-facing faults.
 - The worker owns backend runtimes, backend-specific retries, and tool
   execution.
-- Use `libmcp`'s host-session kernel and snapshot-file handoff instead of
-  rolling custom initialize seed and reexec glue.
+- Keep the public session, host process epoch, and worker generation distinct.
+- Use `libmcp`'s host-session kernel and bounded, private, one-shot snapshot
+  capsules instead of rolling custom initialize seed and reexec glue.
 
 If the worker dies, the session should survive.
 
 ## 2. Replay as a typed contract
 
-Every request surface needs an explicit replay class:
+Every routed invocation needs an explicit replay contract before first worker
+dispatch:
 
 - `Convergent`
 - `ProbeRequired`
 - `NeverReplay`
 
-Do not add blanket retry or replay logic. The replay class belongs in code, not
-in scattered comments.
+Track whether it is `NotDispatched`, `InFlight`, `Completed`, or
+`OutcomeUnknown`. A first dispatch is not a replay; queueing does not consume a
+replay attempt; actual redispatch does.
+
+Do not add blanket retry logic. The contract belongs to the invocation after
+domain routing, not merely to a coarse JSON-RPC method. Hold `ProbeRequired`
+work until explicit domain evidence arrives, and terminate `NeverReplay` work
+with an ambiguous-outcome error after uncertain execution.
 
 ## 3. Typed faults
 
@@ -41,9 +49,11 @@ Baseline classes:
 - resource
 - replay exhaustion
 - rollout disruption
+- ambiguous execution outcome
 - invariant breach
 
-Faults should flow through health, telemetry, and user-facing shaping.
+Faults should flow through health, telemetry, and user-facing shaping. Any
+process-recovery hint is advisory: it must never authorize request replay.
 
 ## 4. Porcelain by default
 
@@ -90,9 +100,10 @@ The goal is to eliminate trivial friction, not to hide real ambiguity.
 
 Ship explicit operational tooling:
 
-- health snapshot
-- telemetry snapshot
-- append-only event telemetry
+- health snapshots that distinguish host lifecycle from worker handshake phase
+- session-scoped request, terminal outcome, recovery-fault, and retry totals
+- append-only event telemetry with intact concurrent JSONL records and an
+  explicit flush policy
 
 Do this before feature sprawl, not after the first outage.
 
@@ -101,7 +112,10 @@ Do this before feature sprawl, not after the first outage.
 Build fake runtimes and integration tests that exercise:
 
 - crash recovery
-- replay legality
+- worker loss before dispatch, during execution, and after completion
+- replay legality, probe barriers, attempt accounting, and capacity exhaustion
+- exact public and private initialization interleavings
+- coordinated reexec, corrupt capsules, and version rejection
 - rollout or restart churn
 - model-facing output shaping
 - routing correctness where the backend is root-sensitive
