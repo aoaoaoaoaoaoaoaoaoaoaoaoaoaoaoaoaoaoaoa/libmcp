@@ -13,6 +13,9 @@ pub enum NumericParseError {
     /// The input could not be represented as a non-negative integer.
     #[error("expected a non-negative integer")]
     Invalid,
+    /// The integer does not fit the requested machine type.
+    #[error("integer is out of range")]
+    OutOfRange,
 }
 
 /// A path-like value could not be normalized.
@@ -21,6 +24,9 @@ pub enum PathNormalizeError {
     /// The input was empty.
     #[error("path input must be non-empty")]
     Empty,
+    /// Surrounding whitespace would make the path identity ambiguous.
+    #[error("path input must not contain surrounding whitespace")]
+    SurroundingWhitespace,
     /// The `file://` URI was malformed.
     #[error("file URI is invalid")]
     InvalidFileUri,
@@ -36,35 +42,38 @@ pub enum PathNormalizeError {
 /// - integer numbers
 /// - integer-like floating-point spellings such as `42.0`
 /// - numeric strings
-#[must_use]
-pub fn parse_human_unsigned_u64(raw: &str) -> Option<u64> {
+pub fn parse_human_unsigned_u64(raw: &str) -> Result<u64, NumericParseError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return None;
+        return Err(NumericParseError::Empty);
     }
     if let Ok(value) = trimmed.parse::<u64>() {
-        return Some(value);
+        return Ok(value);
     }
-    let parsed_float = trimmed.parse::<f64>().ok()?;
-    if !parsed_float.is_finite() || parsed_float < 0.0 || parsed_float.fract() != 0.0 {
-        return None;
+    if !trimmed.contains('.') {
+        return Err(if trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+            NumericParseError::OutOfRange
+        } else {
+            NumericParseError::Invalid
+        });
     }
-    let max = u64::MAX as f64;
-    if parsed_float > max {
-        return None;
+    let (integer, fraction) = trimmed.split_once('.').ok_or(NumericParseError::Invalid)?;
+    if integer.is_empty() || fraction.is_empty() || !fraction.bytes().all(|byte| byte == b'0') {
+        return Err(NumericParseError::Invalid);
     }
-    Some(parsed_float as u64)
+    integer
+        .parse::<u64>()
+        .map_err(|_| NumericParseError::OutOfRange)
 }
 
-/// Converts `u64` to `usize`, saturating on overflow.
-#[must_use]
-pub fn saturating_u64_to_usize(value: u64) -> usize {
-    usize::try_from(value).unwrap_or(usize::MAX)
+/// Converts `u64` to the platform index width without saturation.
+pub fn checked_u64_to_usize(value: u64) -> Result<usize, NumericParseError> {
+    usize::try_from(value).map_err(|_| NumericParseError::OutOfRange)
 }
 
-/// Normalizes a token by dropping non-alphanumeric ASCII and lowercasing.
+/// Builds a lossy ASCII equivalence key for internal heuristic matching.
 #[must_use]
-pub fn normalize_ascii_token(raw: &str) -> String {
+pub(crate) fn fold_ascii_token(raw: &str) -> String {
     raw.chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .map(|character| character.to_ascii_lowercase())
@@ -76,17 +85,19 @@ pub fn normalize_local_path(
     raw: &str,
     workspace_root: Option<&Path>,
 ) -> Result<PathBuf, PathNormalizeError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    if raw.is_empty() {
         return Err(PathNormalizeError::Empty);
     }
-    let parsed = if trimmed.starts_with("file://") {
-        let file_url = Url::parse(trimmed).map_err(|_| PathNormalizeError::InvalidFileUri)?;
+    if raw.trim() != raw {
+        return Err(PathNormalizeError::SurroundingWhitespace);
+    }
+    let parsed = if raw.starts_with("file://") {
+        let file_url = Url::parse(raw).map_err(|_| PathNormalizeError::InvalidFileUri)?;
         file_url
             .to_file_path()
             .map_err(|()| PathNormalizeError::NonLocalFileUri)?
     } else {
-        PathBuf::from(trimmed)
+        PathBuf::from(raw)
     };
     Ok(if parsed.is_absolute() {
         parsed
@@ -99,25 +110,41 @@ pub fn normalize_local_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_ascii_token, normalize_local_path, parse_human_unsigned_u64};
+    use super::{
+        NumericParseError, fold_ascii_token, normalize_local_path, parse_human_unsigned_u64,
+    };
     use std::path::Path;
 
     #[test]
     fn parses_human_unsigned_integers() {
-        assert_eq!(parse_human_unsigned_u64("42"), Some(42));
-        assert_eq!(parse_human_unsigned_u64("42.0"), Some(42));
-        assert_eq!(parse_human_unsigned_u64(" 7 "), Some(7));
-        assert_eq!(parse_human_unsigned_u64("-1"), None);
-        assert_eq!(parse_human_unsigned_u64("7.5"), None);
+        assert_eq!(parse_human_unsigned_u64("42"), Ok(42));
+        assert_eq!(parse_human_unsigned_u64("42.0"), Ok(42));
+        assert_eq!(parse_human_unsigned_u64(" 7 "), Ok(7));
+        assert_eq!(
+            parse_human_unsigned_u64("-1"),
+            Err(NumericParseError::Invalid)
+        );
+        assert_eq!(
+            parse_human_unsigned_u64("7.5"),
+            Err(NumericParseError::Invalid)
+        );
+        assert_eq!(
+            parse_human_unsigned_u64("9007199254740993.0"),
+            Ok(9_007_199_254_740_993)
+        );
+        assert_eq!(
+            parse_human_unsigned_u64("18446744073709551616"),
+            Err(NumericParseError::OutOfRange)
+        );
     }
 
     #[test]
     fn normalizes_ascii_tokens() {
         assert_eq!(
-            normalize_ascii_token("textDocument/prepareRename"),
+            fold_ascii_token("textDocument/prepareRename"),
             "textdocumentpreparerename"
         );
-        assert_eq!(normalize_ascii_token("prepare_rename"), "preparerename");
+        assert_eq!(fold_ascii_token("prepare_rename"), "preparerename");
     }
 
     #[test]
@@ -129,5 +156,6 @@ mod tests {
             resolved.ok().as_deref(),
             Some(root.join("src/lib.rs").as_path())
         );
+        assert!(normalize_local_path(" src/lib.rs", Some(root)).is_err());
     }
 }

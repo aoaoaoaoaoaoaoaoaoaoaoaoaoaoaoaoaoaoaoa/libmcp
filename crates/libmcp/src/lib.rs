@@ -37,8 +37,8 @@ pub use jsonrpc::{
     RpcMethod, ToolCallMeta, ToolName, parse_tool_call_meta, read_frame, write_frame,
 };
 pub use normalize::{
-    NumericParseError, PathNormalizeError, normalize_ascii_token, normalize_local_path,
-    parse_human_unsigned_u64, saturating_u64_to_usize,
+    NumericParseError, PathNormalizeError, checked_u64_to_usize, normalize_local_path,
+    parse_human_unsigned_u64,
 };
 pub use projection::{
     FallbackJsonProjection, ProjectionError, ProjectionPolicy, SelectorProjection, SelectorRef,

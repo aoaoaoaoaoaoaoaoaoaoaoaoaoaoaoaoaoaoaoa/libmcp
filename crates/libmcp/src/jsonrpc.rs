@@ -1,6 +1,6 @@
 //! Lightweight JSON-RPC frame helpers.
 
-use crate::normalize::normalize_ascii_token;
+use crate::normalize::fold_ascii_token;
 use crate::types::InvariantViolation;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -161,7 +161,7 @@ impl ToolName {
     /// Returns whether the tool name denotes the common advanced-LSP proxy.
     #[must_use]
     pub fn is_advanced_lsp_request(&self) -> bool {
-        normalize_ascii_token(self.as_str()) == Self::ADVANCED_LSP_REQUEST_NORMALIZED
+        fold_ascii_token(self.as_str()) == Self::ADVANCED_LSP_REQUEST_NORMALIZED
     }
 }
 

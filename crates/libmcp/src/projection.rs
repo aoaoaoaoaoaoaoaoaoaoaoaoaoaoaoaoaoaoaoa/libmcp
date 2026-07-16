@@ -2,7 +2,7 @@
 
 use crate::render::{DetailLevel, JsonPorcelainConfig, render_json_porcelain};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
@@ -35,6 +35,14 @@ pub enum ProjectionError {
     /// Serialization failed while materializing the projection.
     #[error("failed to serialize projection: {0}")]
     Serialize(#[from] serde_json::Error),
+    /// A declared surface policy was violated by the materialized projection.
+    #[error("projection policy violation at {path}: {rule}")]
+    Policy {
+        /// JSON-like location of the violation.
+        path: String,
+        /// Stable policy rule description.
+        rule: &'static str,
+    },
 }
 
 /// Model-facing surface kind.
@@ -117,11 +125,18 @@ pub struct SelectorRef {
 }
 
 /// Uniform RFC3339 timestamp text for model-facing surfaces.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct TimestampText(String);
 
 impl TimestampText {
+    /// Parses and canonicalizes RFC3339 timestamp text.
+    pub fn try_new(timestamp: impl AsRef<str>) -> Result<Self, crate::InvariantViolation> {
+        let timestamp = OffsetDateTime::parse(timestamp.as_ref(), &Rfc3339)
+            .map_err(|_| crate::InvariantViolation::new("timestamp text must be valid RFC3339"))?;
+        Self::try_from(timestamp)
+    }
+
     /// Returns the rendered timestamp string.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -135,13 +150,23 @@ impl fmt::Display for TimestampText {
     }
 }
 
-impl From<OffsetDateTime> for TimestampText {
-    fn from(timestamp: OffsetDateTime) -> Self {
-        Self(
-            timestamp
-                .format(&Rfc3339)
-                .unwrap_or_else(|_| timestamp.unix_timestamp().to_string()),
-        )
+impl TryFrom<OffsetDateTime> for TimestampText {
+    type Error = crate::InvariantViolation;
+
+    fn try_from(timestamp: OffsetDateTime) -> Result<Self, Self::Error> {
+        timestamp.format(&Rfc3339).map(Self).map_err(|_| {
+            crate::InvariantViolation::new("timestamp is outside the RFC3339 year range")
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TimestampText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let timestamp = String::deserialize(deserializer)?;
+        Self::try_new(timestamp).map_err(de::Error::custom)
     }
 }
 
@@ -179,10 +204,12 @@ pub trait StructuredProjection {
 pub trait ToolProjection: StructuredProjection + SurfacePolicy {
     /// Returns the structured projection for the chosen detail level.
     fn structured_projection(&self, detail: DetailLevel) -> Result<Value, ProjectionError> {
-        match detail {
+        let value = match detail {
             DetailLevel::Concise => self.concise_projection(),
             DetailLevel::Full => self.full_projection(),
-        }
+        }?;
+        validate_projection_policy(&value, self.projection_policy())?;
+        Ok(value)
     }
 
     /// Renders porcelain for the chosen detail level.
@@ -195,6 +222,64 @@ pub trait ToolProjection: StructuredProjection + SurfacePolicy {
 }
 
 impl<T> ToolProjection for T where T: StructuredProjection + SurfacePolicy {}
+
+fn validate_projection_policy(
+    value: &Value,
+    policy: ProjectionPolicy,
+) -> Result<(), ProjectionError> {
+    walk_projection(value, "$", &mut |path, object| {
+        for key in object.keys() {
+            if policy.forbid_opaque_ids && (key == "id" || key.ends_with("_id")) {
+                return Err(ProjectionError::Policy {
+                    path: format!("{path}.{key}"),
+                    rule: "opaque identifier fields are forbidden",
+                });
+            }
+            if policy.reference_only
+                && matches!(key.as_str(), "body" | "content" | "text" | "bytes")
+            {
+                return Err(ProjectionError::Policy {
+                    path: format!("{path}.{key}"),
+                    rule: "reference-only surfaces must not inline artifact content",
+                });
+            }
+            if policy.kind == SurfaceKind::List
+                && matches!(
+                    key.as_str(),
+                    "body" | "payload_preview" | "analysis" | "rationale"
+                )
+            {
+                return Err(ProjectionError::Policy {
+                    path: format!("{path}.{key}"),
+                    rule: "list surfaces must not inline prose bodies",
+                });
+            }
+        }
+        Ok(())
+    })
+}
+
+fn walk_projection(
+    value: &Value,
+    path: &str,
+    visitor: &mut impl FnMut(&str, &serde_json::Map<String, Value>) -> Result<(), ProjectionError>,
+) -> Result<(), ProjectionError> {
+    match value {
+        Value::Object(object) => {
+            visitor(path, object)?;
+            for (key, child) in object {
+                walk_projection(child, &format!("{path}.{key}"), visitor)?;
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                walk_projection(child, &format!("{path}[{index}]"), visitor)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
 
 /// Explicit escape hatch for already-curated JSON projections.
 #[derive(Debug, Clone)]
@@ -260,7 +345,9 @@ impl SurfacePolicy for FallbackJsonProjection {
 
 #[cfg(test)]
 mod tests {
-    use super::{StructuredProjection as _, SurfaceKind, SurfacePolicy as _};
+    use super::{
+        FallbackJsonProjection, StructuredProjection as _, SurfaceKind, SurfacePolicy as _,
+    };
     use crate::{DetailLevel, SelectorProjection, SelectorRef, ToolProjection};
     use time::OffsetDateTime;
 
@@ -341,7 +428,12 @@ mod tests {
             Ok(value) => value,
             Err(_) => return,
         };
-        let rendered = super::TimestampText::from(timestamp);
+        let rendered = super::TimestampText::try_from(timestamp);
+        assert!(rendered.is_ok());
+        let rendered = match rendered {
+            Ok(value) => value,
+            Err(_) => return,
+        };
         let json = serde_json::to_value(&rendered);
         assert!(json.is_ok());
         let json = match json {
@@ -349,5 +441,28 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(json, serde_json::json!("1970-01-01T00:00:00Z"));
+        assert!(serde_json::from_str::<super::TimestampText>(r#""not-a-time""#).is_err());
+    }
+
+    #[test]
+    fn tool_projection_enforces_declared_policy_before_returning_output() {
+        let projection = FallbackJsonProjection::with_policy(
+            serde_json::json!({"id": 7, "slug": "visible"}),
+            serde_json::json!({"id": 7, "slug": "visible"}),
+            SurfaceKind::Read,
+            true,
+            false,
+        );
+        assert!(projection.is_ok());
+        let projection = match projection {
+            Ok(projection) => projection,
+            Err(_) => return,
+        };
+        assert!(
+            projection
+                .structured_projection(DetailLevel::Concise)
+                .is_err()
+        );
+        assert!(projection.porcelain_projection(DetailLevel::Full).is_err());
     }
 }
