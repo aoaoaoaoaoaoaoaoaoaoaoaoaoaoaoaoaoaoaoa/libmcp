@@ -37,6 +37,8 @@ pub use jsonrpc::{
     RpcMethod, ToolCallMeta, ToolName, parse_tool_call_meta, read_frame, read_frame_blocking,
     write_frame, write_frame_blocking,
 };
+#[cfg(unix)]
+pub use jsonrpc::{TimedFrameReadOutcome, TimedFrameReader};
 pub use normalize::{
     NumericParseError, PathNormalizeError, checked_u64_to_usize, normalize_local_path,
     parse_human_unsigned_u64,

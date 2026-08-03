@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- add a lossless timed blocking frame reader for idle host control loops; it
+  retains partial and read-ahead frames and exposes the buffered-input barrier
+  required before coordinated `exec`
+
 ## 2.0.2
 
 - add bounded blocking frame readers and writers with the same limits and

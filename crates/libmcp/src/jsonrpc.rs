@@ -9,6 +9,11 @@ use serde::{
 };
 use serde_json::{Map, Number, Value};
 use std::{fmt, io};
+#[cfg(unix)]
+use std::{
+    os::fd::AsFd,
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use url::Url;
@@ -463,6 +468,146 @@ pub enum FrameReadOutcome {
     EndOfStream,
 }
 
+/// One result of polling a blocking line-delimited JSON-RPC stream.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimedFrameReadOutcome {
+    /// A frame payload was read.
+    Frame(Vec<u8>),
+    /// The stream ended cleanly.
+    EndOfStream,
+    /// No complete frame arrived before the deadline.
+    TimedOut,
+}
+
+/// Lossless timed reader for blocking Unix file descriptors.
+///
+/// The reader retains partial and read-ahead bytes across timeouts. A caller
+/// preparing to replace its process image must defer replacement while
+/// [`Self::has_buffered_input`] is true; kernel-buffered bytes survive `exec`,
+/// but bytes already admitted here do not.
+#[cfg(unix)]
+pub struct TimedFrameReader<R> {
+    reader: R,
+    limit: FrameLimit,
+    buffer: Vec<u8>,
+    consumed: usize,
+    eof: bool,
+}
+
+#[cfg(unix)]
+impl<R> TimedFrameReader<R>
+where
+    R: io::Read + AsFd,
+{
+    /// Constructs a timed reader with an explicit per-frame byte limit.
+    pub fn new(reader: R, limit: FrameLimit) -> Self {
+        Self {
+            reader,
+            limit,
+            buffer: Vec::new(),
+            consumed: 0,
+            eof: false,
+        }
+    }
+
+    /// Returns whether bytes have left the kernel stream but not yet formed a
+    /// returned frame.
+    #[must_use]
+    pub fn has_buffered_input(&self) -> bool {
+        self.consumed < self.buffer.len()
+    }
+
+    /// Waits up to `timeout` for one complete frame or end-of-stream.
+    pub fn read_frame(&mut self, timeout: Duration) -> io::Result<TimedFrameReadOutcome> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "frame poll timeout is too large",
+            )
+        })?;
+        loop {
+            if let Some(outcome) = self.extract_frame()? {
+                return Ok(outcome);
+            }
+            if self.eof {
+                return Ok(TimedFrameReadOutcome::EndOfStream);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = rustix::event::Timespec::try_from(remaining).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("frame poll timeout is out of range: {error}"),
+                )
+            })?;
+            let ready = {
+                let mut descriptors = [rustix::event::PollFd::new(
+                    &self.reader,
+                    rustix::event::PollFlags::IN,
+                )];
+                match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+                    Ok(ready) => ready,
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            if ready == 0 {
+                return Ok(TimedFrameReadOutcome::TimedOut);
+            }
+
+            self.compact();
+            let mut chunk = [0_u8; 8 * 1024];
+            let bytes = self.reader.read(&mut chunk)?;
+            if bytes == 0 {
+                self.eof = true;
+            } else {
+                self.buffer.extend_from_slice(&chunk[..bytes]);
+            }
+        }
+    }
+
+    fn extract_frame(&mut self) -> io::Result<Option<TimedFrameReadOutcome>> {
+        loop {
+            let pending = &self.buffer[self.consumed..];
+            let Some(delimiter) = pending.iter().position(|byte| *byte == b'\n') else {
+                if pending.len() > self.limit.get() {
+                    return Err(frame_limit_error(self.limit));
+                }
+                if self.eof && !pending.is_empty() {
+                    let frame = pending.to_vec();
+                    self.consumed = self.buffer.len();
+                    return Ok(Some(TimedFrameReadOutcome::Frame(frame)));
+                }
+                return Ok(None);
+            };
+            if delimiter > self.limit.get() {
+                return Err(frame_limit_error(self.limit));
+            }
+            let start = self.consumed;
+            let end = start + delimiter;
+            self.consumed = end + 1;
+            let mut frame = self.buffer[start..end].to_vec();
+            if frame.last() == Some(&b'\r') {
+                let _carriage_return = frame.pop();
+            }
+            if !frame.is_empty() {
+                return Ok(Some(TimedFrameReadOutcome::Frame(frame)));
+            }
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.consumed == self.buffer.len() {
+            self.buffer.clear();
+            self.consumed = 0;
+        } else if self.consumed >= 8 * 1024 {
+            drop(self.buffer.drain(..self.consumed));
+            self.consumed = 0;
+        }
+    }
+}
+
 /// Maximum bytes in one line-delimited frame, excluding the `\n` delimiter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameLimit(usize);
@@ -723,6 +868,8 @@ mod tests {
         RpcMethod, ToolName, parse_tool_call_meta, read_frame, read_frame_blocking, write_frame,
         write_frame_blocking,
     };
+    #[cfg(unix)]
+    use super::{TimedFrameReadOutcome, TimedFrameReader};
     use serde_json::{Number, json};
     use tokio::io::BufReader;
 
@@ -930,5 +1077,69 @@ mod tests {
         assert_eq!(sink, b"1234\n");
         let rejected = write_frame_blocking(&mut sink, b"123456", limit);
         assert!(matches!(rejected, Err(error) if error.kind() == std::io::ErrorKind::InvalidInput));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_reader_retains_partial_and_read_ahead_frames() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let streams = UnixStream::pair();
+        assert!(streams.is_ok());
+        let (reader, mut writer) = match streams {
+            Ok(streams) => streams,
+            Err(_) => return,
+        };
+        let limit = match FrameLimit::try_new(5) {
+            Ok(limit) => limit,
+            Err(_) => return,
+        };
+        let mut reader = TimedFrameReader::new(reader, limit);
+
+        let empty = reader.read_frame(Duration::from_millis(1));
+        assert!(matches!(empty, Ok(TimedFrameReadOutcome::TimedOut)));
+        assert!(!reader.has_buffered_input());
+
+        assert!(writer.write_all(b"12").is_ok());
+        let partial = reader.read_frame(Duration::from_millis(1));
+        assert!(matches!(partial, Ok(TimedFrameReadOutcome::TimedOut)));
+        assert!(reader.has_buffered_input());
+
+        assert!(writer.write_all(b"34\n\n56\n").is_ok());
+        let first = reader.read_frame(Duration::from_millis(10));
+        assert!(matches!(first, Ok(TimedFrameReadOutcome::Frame(frame)) if frame == b"1234"));
+        assert!(reader.has_buffered_input());
+        let second = reader.read_frame(Duration::ZERO);
+        assert!(matches!(second, Ok(TimedFrameReadOutcome::Frame(frame)) if frame == b"56"));
+        assert!(!reader.has_buffered_input());
+
+        drop(writer);
+        let end = reader.read_frame(Duration::from_millis(10));
+        assert!(matches!(end, Ok(TimedFrameReadOutcome::EndOfStream)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_reader_rejects_oversized_partial_frames() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let streams = UnixStream::pair();
+        assert!(streams.is_ok());
+        let (reader, mut writer) = match streams {
+            Ok(streams) => streams,
+            Err(_) => return,
+        };
+        let limit = match FrameLimit::try_new(5) {
+            Ok(limit) => limit,
+            Err(_) => return,
+        };
+        let mut reader = TimedFrameReader::new(reader, limit);
+        assert!(writer.write_all(b"123456").is_ok());
+        let rejected = reader.read_frame(Duration::from_millis(10));
+        assert!(matches!(rejected, Err(error) if error.kind() == std::io::ErrorKind::InvalidData));
     }
 }
