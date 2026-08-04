@@ -58,6 +58,8 @@ process-recovery hint is advisory: it must never authorize request replay.
 ## 4. Porcelain by default
 
 Nontrivial tools should default to `render=porcelain`.
+Treat rendering as an exclusive choice: porcelain omits `structuredContent`,
+and JSON is not duplicated into text content.
 
 `render` and detail are separate axes.
 

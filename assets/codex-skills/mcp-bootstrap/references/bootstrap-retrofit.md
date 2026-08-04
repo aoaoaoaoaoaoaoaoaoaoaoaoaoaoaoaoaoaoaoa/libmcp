@@ -11,6 +11,8 @@ scratch.
 3. Define typed operational faults with optional process hints; never encode
    request replay authority in a fault.
 4. Replace ad hoc backend dumps with porcelain-by-default output.
+   Make the render exclusive: never return the porcelain and the structured
+   projection together, and never echo structured JSON as text.
    Make `render` and `detail` orthogonal before you start bikeshedding prose.
    Do not rebrand pretty-printed JSON as porcelain. If the data is tabular,
    render a compact `|`-separated table with headers and unquoted scalar cells;

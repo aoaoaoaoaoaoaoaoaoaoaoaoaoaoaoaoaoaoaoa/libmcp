@@ -36,6 +36,8 @@ Default pattern:
 - queued client work is not dispatch-authorized work
 - health, telemetry, and recovery tests land before feature sprawl
 - nontrivial tools default to `render=porcelain`
+- rendering is exclusive: porcelain results omit `structuredContent`, while
+  structured results do not repeat JSON in text content
 - porcelain output should avoid JSON unless the underlying data is irreducibly
   tree-shaped; tabular data should render as compact text tables with a header
   row, `|` separators, and unquoted scalar cells

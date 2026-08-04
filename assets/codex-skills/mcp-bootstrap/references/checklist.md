@@ -19,6 +19,8 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Do tool surfaces cross an explicit projection boundary rather than serializing
   raw domain/store structs directly?
 - Do nontrivial tools default to porcelain output?
+- Does each result emit exactly one representation, with no porcelain plus
+  `structuredContent` or structured JSON duplicated as text?
 - Does porcelain avoid JSON unless the data is irreducibly tree-shaped?
 - Do tabular results render as compact tables with headers, `|` separators, and
   unquoted scalar cells?

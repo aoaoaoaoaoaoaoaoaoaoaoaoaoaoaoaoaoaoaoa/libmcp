@@ -303,6 +303,13 @@ explicit flush policy. Rotation and retention remain consumer obligations.
 - `render=porcelain|json` selects text or structured output
 - `detail=concise|full` selects summary or expanded projection
 
+The selected render is exclusive at the model boundary. A porcelain result
+MUST NOT also carry the same projection in `structuredContent`; a JSON result
+MUST NOT repeat its structured projection as serialized JSON text. Compatibility
+fallbacks belong at a client-specific transport adapter, never in the default
+model-facing result. Otherwise every projection consumes context twice and
+`render` ceases to select anything.
+
 Library render helpers that declare bounds MUST enforce them deterministically
 and MUST mark truncation explicitly. They MUST escape or otherwise delimit
 scalar text unambiguously.
@@ -330,6 +337,7 @@ Consumers MUST:
 - report host lifecycle and worker handshake phase as separate observed facts
 - shape domain faults without exposing raw backend spew by default
 - define actual concise and full model-facing projections
+- emit exactly one model-facing representation of each successful projection
 - protect sensitive request and telemetry content according to local policy
 
 Consumers MUST NOT infer replay safety merely from successful worker restart,
