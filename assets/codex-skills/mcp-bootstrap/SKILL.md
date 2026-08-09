@@ -34,6 +34,8 @@ Default pattern:
 - each routed invocation receives an explicit replay contract before dispatch
 - process recovery and request replay remain orthogonal decisions
 - queued client work is not dispatch-authorized work
+- managed release channels remain optional; direct binary execution stays valid
+- live handoff admits a successor only after private hydration and readiness
 - health, telemetry, and recovery tests land before feature sprawl
 - nontrivial tools default to `render=porcelain`
 - rendering is exclusive: porcelain results omit `structuredContent`, while
@@ -72,6 +74,8 @@ Retrofitting order:
 - Never auto-replay side-effecting requests unless safety is explicit in code.
 - Never treat worker restart or a fault hint as replay authority.
 - Never synthesize public initialization events the client did not send.
+- Never make an eager builder, launcher, channel, or daemon a prerequisite for
+  direct execution of a consumer binary.
 - Re-open the reference docs when details matter; do not rely on memory.
 - Treat this skill as a pointer to `libmcp` patterns and docs, not an
   independent spec.

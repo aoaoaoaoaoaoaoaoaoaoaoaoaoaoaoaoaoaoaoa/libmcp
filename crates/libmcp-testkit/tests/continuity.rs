@@ -10,6 +10,7 @@ use libmcp_testkit::ChurnHarness;
 use serde as _;
 use serde_json::json;
 use std::error::Error;
+use tempfile as _;
 
 #[test]
 fn downstream_recovery_obeys_contract_order_and_actual_attempt_accounting()

@@ -1,5 +1,8 @@
 //! Shared test helpers for `libmcp` consumers.
 
+#[cfg(test)]
+use tempfile as _;
+
 use libmcp::{
     CompletedPendingRequest, DetailLevel, DispatchQueueOutcome, FramedMessage, HostRejection,
     HostSessionKernel, ProbeResolution, ProbeResolutionOutcome, ReplayBudget, ReplayContract,

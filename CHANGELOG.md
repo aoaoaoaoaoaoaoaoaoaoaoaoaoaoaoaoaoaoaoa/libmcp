@@ -2,9 +2,20 @@
 
 ## Unreleased
 
+## 2.1.0
+
 - add a lossless timed blocking frame reader for idle host control loops; it
   retains partial and read-ahead frames and exposes the buffered-input barrier
-  required before coordinated `exec`
+  required before coordinated process replacement
+- add an optional release-channel runtime that preserves direct standalone
+  execution when managed-release environment is absent
+- add immutable release manifests, executable verification, atomic channel
+  selection, explicit state-epoch compatibility, and previous-release rollback
+- replace blind self-exec with a private two-phase successor barrier: the new
+  host must hydrate its bounded session capsule and report live before the
+  incumbent relinquishes the public stream
+- add process-level conformance tests proving successful continuity and
+  incumbent survival after injected successor initialization failure
 
 ## 2.0.2
 

@@ -17,6 +17,7 @@ pub mod normalize;
 pub mod projection;
 pub mod render;
 pub mod replay;
+pub mod rollout;
 pub mod telemetry;
 pub mod types;
 
@@ -55,6 +56,11 @@ pub use render::{
 pub use replay::{
     ExecutionKnowledge, ExecutionTransitionError, ProbeResolution, ReplayAllowance, ReplayContract,
     RequestDisposition, request_disposition,
+};
+pub use rollout::{
+    HandoffOutcome, LIBMCP_HANDOFF_SOCKET_ENV, LIBMCP_RELEASE_CHANNEL_ENV,
+    LIBMCP_RELEASE_GENERATION_ENV, ReleaseId, ReleaseManifest, ReleaseObservation, ReleasePointer,
+    ReleaseProvenance, ReleaseRuntime, StateCompatibility, load_release, verify_release,
 };
 pub use telemetry::{TelemetryFlushPolicy, TelemetryLog, ToolErrorDetail, ToolOutcome};
 pub use types::{Generation, InvariantViolation};

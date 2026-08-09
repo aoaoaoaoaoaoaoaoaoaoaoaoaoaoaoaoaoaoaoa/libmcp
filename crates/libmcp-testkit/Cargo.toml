@@ -12,9 +12,12 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-libmcp = { version = "2.0.2", path = "../libmcp" }
+libmcp = { version = "2.1.0", path = "../libmcp" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

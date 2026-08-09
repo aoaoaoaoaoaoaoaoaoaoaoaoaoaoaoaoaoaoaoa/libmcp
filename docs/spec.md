@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the normative contract for `libmcp` `2.0.0`. Every
+This document defines the normative contract for `libmcp` `2.1.0`. Every
 library-owned `MUST` is a release gate backed by executable conformance
 evidence; consumer-owned `MUST` statements define the boundary the library
 cannot cross without domain or transport knowledge.
@@ -47,7 +47,7 @@ The continuity plane owns shared vocabulary and mechanisms for:
 - public-session continuity across worker churn
 - execution knowledge and replay contracts
 - typed operational faults and recovery decisions
-- coordinated host-reexec handoff
+- coordinated readiness-gated host handoff
 - health and telemetry base schemas
 - append-only event telemetry
 - recovery conformance tests
@@ -68,7 +68,7 @@ The repository also owns the canonical `$mcp-bootstrap` skill.
 - backend-specific request routing or warm-up heuristics
 - the public or private transport implementation
 - domain-specific probes for uncertain side effects
-- process supervision and rollout orchestration
+- eager building, process supervision, and release publication orchestration
 - long-term telemetry retention policy
 - crash-consistent session persistence
 - an obligation that every tool batch or support preview modes
@@ -86,9 +86,35 @@ The library supports both common worker shapes:
 The invariants are shared; the worker wire shape is not.
 
 In this specification, continuity means survival of worker replacement and
-coordinated host reexec. It does not mean survival of host crashes, machine
+coordinated host handoff. It does not mean survival of host crashes, machine
 loss, public transport loss, or uncoordinated process termination. Snapshot
 handoff is not a durable persistence protocol.
+
+## Optional Release Plane
+
+Release management is an adapter around a standalone MCP executable, never a
+prerequisite of that executable. A consumer with no managed-release environment
+MUST retain its direct invocation contract and MUST NOT require a registry,
+daemon, channel, or release manifest.
+
+A managed release is immutable and carries one release identity, executable
+digest, source and toolchain provenance, default argument vector, and explicit
+state compatibility contract. A mutable channel selects exactly one immutable
+manifest through atomic file replacement. Selection MUST NOT expose a partially
+written manifest or executable.
+
+Before a live handoff, the incumbent MUST stop at a complete-frame boundary and
+MUST NOT relinquish authority while its frame reader owns partial or read-ahead
+bytes. The successor receives the consumer-owned bounded snapshot through the
+existing one-shot capsule mechanism, initializes privately, and reports ready
+over a private barrier. Failure before activation leaves the incumbent
+authoritative. After activation acknowledgement, the incumbent MUST stop
+reading the public stream immediately.
+
+Stateful releases declare the epochs they can read and the single epoch they
+write. Promotion is lawful only when the successor reads the incumbent's write
+epoch; rollback applies the same rule in reverse. A process switch does not
+make an irreversible state migration rollback-safe.
 
 The following concepts are distinct:
 

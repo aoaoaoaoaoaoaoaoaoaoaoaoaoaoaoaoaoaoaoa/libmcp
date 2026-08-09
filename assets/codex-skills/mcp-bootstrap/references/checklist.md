@@ -39,6 +39,14 @@ Use this checklist when reviewing a `libmcp` consumer.
   explicit about flush durability?
 - Are reexec snapshots private, bounded, one-shot, version-exact, and validated
   before hydration?
+- Does the consumer run directly with no managed-release environment?
+- If managed rollout is supported, is the channel atomic, the release immutable,
+  and the executable digest verified?
+- Does the incumbent retain the session until the successor has hydrated and
+  crossed a private readiness barrier?
+- Is process replacement deferred while a timed frame reader owns buffered
+  input?
+- Do promotion and rollback enforce declared state-epoch compatibility?
 - Does the recovery matrix cover loss before dispatch, during execution, after
   completion, probe barriers, queue exhaustion, and corrupt reexec handoff?
 - Is the installed `$mcp-bootstrap` skill sourced from this repository?
