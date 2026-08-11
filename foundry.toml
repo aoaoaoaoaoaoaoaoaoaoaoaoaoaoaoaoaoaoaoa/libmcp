@@ -1,0 +1,44 @@
+schema = 1
+
+[product]
+name = "libmcp"
+package = "libmcp"
+profile = "rust-library"
+
+[coordinates]
+release-tested = [
+  "linux-x86_64",
+  "macos-aarch64",
+  "macos-x86_64",
+  "windows-x86_64",
+]
+
+[[proofs]]
+name = "source"
+laws = ["source"]
+run = ["python3", "check.py", "deep"]
+timeout-minutes = 45
+
+[[proofs]]
+name = "security"
+laws = ["security"]
+run = ["scripts/audit"]
+timeout-minutes = 15
+
+[[proofs]]
+name = "source-package"
+laws = ["source-package"]
+run = ["scripts/package"]
+timeout-minutes = 30
+
+[[proofs]]
+name = "host"
+laws = ["host"]
+run = ["cargo", "test", "--locked", "--workspace", "--all-targets", "--all-features"]
+coordinates = [
+  "linux-x86_64",
+  "macos-aarch64",
+  "macos-x86_64",
+  "windows-x86_64",
+]
+timeout-minutes = 45
