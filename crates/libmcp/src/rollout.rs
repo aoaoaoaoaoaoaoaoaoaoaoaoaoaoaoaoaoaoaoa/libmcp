@@ -3,16 +3,20 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::{
     fs::{MetadataExt as _, PermissionsExt as _},
     net::{UnixListener, UnixStream},
+};
+#[cfg(unix)]
+use std::{
+    io::Write as _,
+    process::{Child, Command},
+    thread,
 };
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -29,9 +33,13 @@ const RELEASE_SCHEMA: u32 = 1;
 const POINTER_MAX_BYTES: usize = 8 * 1024;
 const MANIFEST_MAX_BYTES: usize = 64 * 1024;
 const SUCCESSOR_SETTLE_TIME: Duration = Duration::from_millis(200);
+#[cfg(unix)]
 const SUCCESSOR_GATE_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(unix)]
 const READY: u8 = b'R';
+#[cfg(unix)]
 const ACTIVATE: u8 = b'A';
+#[cfg(unix)]
 const LIVE: u8 = b'L';
 
 /// SHA-256 identity of one immutable release or one recorded build input.
@@ -404,7 +412,9 @@ struct SettlingSuccessor {
 
 #[derive(Clone, Debug)]
 struct SuccessorTarget {
+    #[cfg(unix)]
     executable: PathBuf,
+    #[cfg(unix)]
     channel: Option<PathBuf>,
     generation: Option<ReleaseId>,
 }
@@ -524,7 +534,9 @@ impl ReleaseRuntime {
                 {
                     verify_release(&release)?;
                     self.successor = Some(SuccessorTarget {
+                        #[cfg(unix)]
                         executable: release.executable().to_owned(),
+                        #[cfg(unix)]
                         channel: Some(channel.clone()),
                         generation: Some(release.generation().clone()),
                     });
@@ -555,7 +567,9 @@ impl ReleaseRuntime {
                             && candidate.first_observed_at.elapsed() >= SUCCESSOR_SETTLE_TIME =>
                     {
                         self.successor = Some(SuccessorTarget {
+                            #[cfg(unix)]
                             executable: executable.clone(),
+                            #[cfg(unix)]
                             channel: None,
                             generation: None,
                         });
@@ -578,15 +592,18 @@ impl ReleaseRuntime {
 
     /// Arms a same-release successor, primarily for deterministic recovery tests.
     pub fn arm_current_relaunch(&mut self) -> io::Result<()> {
-        let (channel, generation) = match &self.mode {
-            ReleaseMode::Standalone { .. } => (None, None),
-            ReleaseMode::Managed {
-                channel, incumbent, ..
-            } => (Some(channel.clone()), Some(incumbent.clone())),
+        let generation = match &self.mode {
+            ReleaseMode::Standalone { .. } => None,
+            ReleaseMode::Managed { incumbent, .. } => Some(incumbent.clone()),
         };
         self.successor = Some(SuccessorTarget {
+            #[cfg(unix)]
             executable: std::env::current_exe()?,
-            channel,
+            #[cfg(unix)]
+            channel: match &self.mode {
+                ReleaseMode::Standalone { .. } => None,
+                ReleaseMode::Managed { channel, .. } => Some(channel.clone()),
+            },
             generation,
         });
         Ok(())
@@ -776,7 +793,10 @@ fn handoff_unix(
 fn finish_handoff(listener: &UnixListener, child: &mut Child, deadline: Instant) -> io::Result<()> {
     let mut stream = loop {
         match listener.accept() {
-            Ok((stream, _address)) => break stream,
+            Ok((stream, _address)) => {
+                stream.set_nonblocking(false)?;
+                break stream;
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if let Some(status) = child.try_wait()? {
                     return Err(io::Error::new(
@@ -822,6 +842,7 @@ fn expect_gate_byte(stream: &mut UnixStream, expected: u8, stage: &str) -> io::R
     Ok(())
 }
 
+#[cfg(unix)]
 fn abort_successor(child: &mut Child) {
     match child.try_wait() {
         Ok(Some(_status)) => {}
@@ -980,8 +1001,6 @@ fn permission_denied(message: impl Into<String>) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
-
     use super::*;
 
     #[test]
@@ -1009,7 +1028,7 @@ mod tests {
         fs::create_dir_all(&release_dir)?;
         let executable = release_dir.join("server");
         let _copied = fs::copy(source, &executable)?;
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
+        set_private_permissions(&executable, 0o700)?;
         let manifest = ReleaseManifest::try_new(
             "mail",
             generation,
@@ -1021,11 +1040,11 @@ mod tests {
         )?;
         let manifest_path = release_dir.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
-        fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o600))?;
+        set_private_permissions(&manifest_path, 0o600)?;
         let pointer = ReleasePointer::try_new(manifest_path)?;
         let channel = server_root.join("current.json");
         fs::write(&channel, serde_json::to_vec(&pointer)?)?;
-        fs::set_permissions(&channel, fs::Permissions::from_mode(0o600))?;
+        set_private_permissions(&channel, 0o600)?;
 
         let loaded = load_release(&channel, "mail")?;
         verify_release(&loaded)?;
@@ -1046,5 +1065,17 @@ mod tests {
             "rustc test",
             "2026-08-09T00:00:00Z",
         )
+    }
+
+    #[cfg(unix)]
+    fn set_private_permissions(path: &Path, mode: u32) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    }
+
+    #[cfg(not(unix))]
+    fn set_private_permissions(_path: &Path, _mode: u32) -> io::Result<()> {
+        Ok(())
     }
 }

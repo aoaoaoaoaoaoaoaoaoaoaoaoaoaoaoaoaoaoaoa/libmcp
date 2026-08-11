@@ -1,4 +1,5 @@
 //! Failure-atomic release-channel and live-handoff acceptance tests.
+#![cfg(unix)]
 
 use std::fs;
 use std::io;
