@@ -122,7 +122,11 @@ impl TelemetryLog {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let sink = OpenOptions::new().create(true).append(true).open(path)?;
+        let mut options = OpenOptions::new();
+        let options = options.create(true).append(true);
+        #[cfg(windows)]
+        let options = options.read(true);
+        let sink = options.open(path)?;
         let repo_root = render_path(repo_root, crate::render::PathStyle::Absolute, None);
         Ok(Self {
             sink,

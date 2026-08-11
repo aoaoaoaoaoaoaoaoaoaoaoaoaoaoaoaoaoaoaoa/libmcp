@@ -872,6 +872,7 @@ mod tests {
     use super::{TimedFrameReadOutcome, TimedFrameReader};
     use serde_json::{Number, json};
     use tokio::io::BufReader;
+    use url::Url;
 
     #[test]
     fn request_id_round_trips_numeric_and_textual_values() {
@@ -993,19 +994,25 @@ mod tests {
 
     #[test]
     fn extracts_tool_call_meta_with_nested_path_hint() {
-        let payload = br#"{
-            "jsonrpc":"2.0",
-            "id":1,
-            "method":"tools/call",
-            "params":{
-                "name":"advanced_lsp_request",
-                "arguments":{
-                    "method":"textDocument/hover",
-                    "params":{"textDocument":{"uri":"file:///tmp/example.rs"}}
+        let path = std::env::temp_dir().join("libmcp-jsonrpc-example.rs");
+        let uri = match Url::from_file_path(&path) {
+            Ok(uri) => uri,
+            Err(()) => return,
+        };
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "advanced_lsp_request",
+                "arguments": {
+                    "method": "textDocument/hover",
+                    "params": {"textDocument": {"uri": uri.as_str()}}
                 }
             }
-        }"#
-        .to_vec();
+        })
+        .to_string()
+        .into_bytes();
         let frame = FramedMessage::parse(payload);
         assert!(frame.is_ok());
         let frame = match frame {
@@ -1023,7 +1030,8 @@ mod tests {
             meta.lsp_method.as_ref().map(RpcMethod::as_str),
             Some("textDocument/hover")
         );
-        assert_eq!(meta.path_hint.as_deref(), Some("/tmp/example.rs"));
+        let expected_path = path.display().to_string();
+        assert_eq!(meta.path_hint.as_deref(), Some(expected_path.as_str()));
     }
 
     #[tokio::test]

@@ -1,4 +1,11 @@
 //! Failure-atomic release-channel and live-handoff acceptance tests.
+#![cfg_attr(
+    not(unix),
+    allow(
+        unused_crate_dependencies,
+        reason = "live handoff is an explicitly Unix-only acceptance surface"
+    )
+)]
 #![cfg(unix)]
 
 use std::fs;
