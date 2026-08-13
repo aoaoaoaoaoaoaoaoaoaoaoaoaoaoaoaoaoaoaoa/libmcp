@@ -405,8 +405,10 @@ Optional local conveniences remain outside the minimum contract:
 
 ## Conformance
 
-Every library-owned `MUST` MUST map to an executable conformance test. The
-minimum matrix covers:
+The executable conformance basis MUST collectively reject violations of every
+library-owned `MUST`. A stronger witness MAY own several laws; a requirement
+does not demand a bespoke test when cheaper or stronger evidence already owns
+its credible violations. The minimum risk matrix covers:
 
 - every execution-knowledge and replay-contract transition
 - worker failure before dispatch, during execution, and after response
@@ -421,7 +423,8 @@ minimum matrix covers:
 
 The testkit SHOULD expose reusable assertions and fake runtimes for consumers.
 Passing unit tests internal to `libmcp` is not sufficient evidence of transport
-or recovery conformance.
+or recovery conformance. Any unit-test witnesses follow the house Unit Test
+Doctrine; one-to-one requirement mapping does not confer permanence on them.
 
 ## Canonical Skill Ownership
 

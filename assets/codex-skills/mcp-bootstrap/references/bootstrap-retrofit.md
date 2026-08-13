@@ -19,8 +19,10 @@ scratch.
    reserve JSON-shaped porcelain for data that is genuinely tree-shaped.
 5. Make session-scoped health and telemetry survive worker churn and
    coordinated reexec.
-6. Add recovery tests across pre-dispatch, uncertain execution, completion,
-   probe barriers, capacity exhaustion, and corrupt handoff.
+6. Apply `$unit-test-doctrine` to any unit-test layer, then establish the
+   smallest recovery basis that discriminates pre-dispatch, uncertain
+   execution, completion, probe barriers, capacity exhaustion, and corrupt
+   handoff where those risks exist.
 7. Only then promise hot rollout or stronger operational guarantees.
 
 When `libmcp` is in play, prefer its host-session kernel, projection traits,
@@ -36,6 +38,8 @@ consumer-local copies.
 - Do not hide routing bugs behind warm-up masking.
 - Do not call a worker self-healing if the host itself cannot roll forward.
 - Do not let the canonical skill drift away from the actual library contract.
+- Do not append a test for every retrofit edit or matrix row; rederive the
+  affected evidence basis and admit only a distinct durable witness.
 
 ## Doctrine
 

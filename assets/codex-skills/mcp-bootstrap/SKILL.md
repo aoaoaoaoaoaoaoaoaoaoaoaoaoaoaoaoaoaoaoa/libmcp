@@ -11,6 +11,10 @@ patterns used by `libmcp`.
 `libmcp` is the source of truth. This skill is a routing guide to the relevant
 reference docs, not a substitute for them.
 
+Load `$unit-test-doctrine` whenever unit tests are in scope. The failure
+matrices below describe material risk, not one mandatory unit test per row or
+per implementation change.
+
 Start by classifying the target:
 
 - Fresh bootstrap: the project can adopt the `libmcp` architecture directly.
@@ -36,7 +40,8 @@ Default pattern:
 - queued client work is not dispatch-authorized work
 - managed release channels remain optional; direct binary execution stays valid
 - live handoff admits a successor only after private hydration and readiness
-- health, telemetry, and recovery tests land before feature sprawl
+- a minimum risk-adequate health, telemetry, and recovery basis lands before
+  feature sprawl
 - nontrivial tools default to `render=porcelain`
 - rendering is exclusive: porcelain results omit `structuredContent`, while
   structured results do not repeat JSON in text content
@@ -66,7 +71,8 @@ Retrofitting order:
   fallback before inventing consumer-local presentation glue
 - make `render` and `detail=concise|full` real before adding extra verbosity
   knobs
-- add rollout, telemetry, and recovery tests before claiming stability
+- establish a minimum risk-adequate rollout, telemetry, and recovery basis
+  before claiming stability
 
 ## Guardrails
 

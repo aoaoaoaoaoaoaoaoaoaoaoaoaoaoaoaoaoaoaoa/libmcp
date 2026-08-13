@@ -111,7 +111,12 @@ Do this before feature sprawl, not after the first outage.
 
 ## 7. Test the failure posture
 
-Build fake runtimes and integration tests that exercise:
+Apply `$unit-test-doctrine` to any unit-test layer, then establish the smallest
+overall basis that rejects the material failures below. These are a risk
+vocabulary, not required test cases; one state-machine, model, or integration
+witness may own several rows.
+
+Cover, where credible:
 
 - crash recovery
 - worker loss before dispatch, during execution, and after completion

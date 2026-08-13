@@ -47,6 +47,8 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Is process replacement deferred while a timed frame reader owns buffered
   input?
 - Do promotion and rollback enforce declared state-epoch compatibility?
+- Does the unit-test layer avoid one change-shaped test per incident, branch,
+  or matrix row?
 - Does the recovery matrix cover loss before dispatch, during execution, after
   completion, probe barriers, queue exhaustion, and corrupt reexec handoff?
 - Is the installed `$mcp-bootstrap` skill sourced from this repository?
