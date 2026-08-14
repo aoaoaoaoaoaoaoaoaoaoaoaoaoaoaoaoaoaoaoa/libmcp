@@ -40,6 +40,10 @@ Default pattern:
 - queued client work is not dispatch-authorized work
 - managed release channels remain optional; direct binary execution stays valid
 - live handoff admits a successor only after private hydration and readiness
+- every OS resource enters RAII custody at acquisition; OS lifetime boundaries
+  or startup reapers cover process death
+- scratch, telemetry, logs, caches, builds, and releases are attributable and
+  bounded
 - a minimum risk-adequate health, telemetry, and recovery basis lands before
   feature sprawl
 - nontrivial tools default to `render=porcelain`

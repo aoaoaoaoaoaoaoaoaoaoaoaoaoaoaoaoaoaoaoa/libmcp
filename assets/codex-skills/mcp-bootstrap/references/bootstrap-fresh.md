@@ -104,12 +104,23 @@ Ship explicit operational tooling:
 
 - health snapshots that distinguish host lifecycle from worker handshake phase
 - session-scoped request, terminal outcome, recovery-fault, and retry totals
-- append-only event telemetry with intact concurrent JSONL records and an
-  explicit flush policy
+- bounded event telemetry with intact concurrent JSONL records and an explicit
+  flush policy
 
 Do this before feature sprawl, not after the first outage.
 
-## 7. Test the failure posture
+## 7. Resource custody
+
+- acquire temporary trees through `libmcp_testkit::TestCell` in consumer tests
+- bind every child and process group to an owner that kills and waits on drop
+- keep runtime scratch inside one private RAII cell; transfer only intentional
+  diagnostics into bounded durable state
+- pair RAII with the service manager or a startup reaper for process-death
+  residue
+- give telemetry, logs, caches, build cells, and immutable generations explicit
+  count, age, or byte ceilings
+
+## 8. Test the failure posture
 
 Apply `$unit-test-doctrine` to any unit-test layer, then establish the smallest
 overall basis that rejects the material failures below. These are a risk

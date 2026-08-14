@@ -1,8 +1,5 @@
 //! Shared test helpers for `libmcp` consumers.
 
-#[cfg(test)]
-use tempfile as _;
-
 use libmcp::{
     CompletedPendingRequest, DetailLevel, DispatchQueueOutcome, FramedMessage, HostRejection,
     HostSessionKernel, ProbeResolution, ProbeResolutionOutcome, ReplayBudget, ReplayContract,
@@ -12,8 +9,59 @@ use serde::de::DeserializeOwned;
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},
-    path::Path,
+    ops::Deref,
+    path::{Path, PathBuf},
 };
+
+/// RAII-owned scratch tree for consumer tests.
+#[derive(Debug)]
+pub struct TestCell(tempfile::TempDir);
+
+impl TestCell {
+    /// Creates an isolated scratch tree under the host temporary directory.
+    pub fn new(prefix: &str) -> io::Result<Self> {
+        tempfile::Builder::new().prefix(prefix).tempdir().map(Self)
+    }
+
+    /// Creates an isolated scratch tree beneath an explicit suite root.
+    pub fn new_in(prefix: &str, root: &Path) -> io::Result<Self> {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(root)
+            .map(Self)
+    }
+
+    /// Returns the live scratch root.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+
+    /// Removes the scratch tree and reports cleanup failure.
+    pub fn close(self) -> io::Result<()> {
+        self.0.close()
+    }
+
+    /// Transfers the scratch tree out of RAII custody.
+    #[must_use]
+    pub fn persist(self) -> PathBuf {
+        self.0.keep()
+    }
+}
+
+impl AsRef<Path> for TestCell {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+impl Deref for TestCell {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.path()
+    }
+}
 
 /// Deterministic fake host boundary for recovery conformance tests.
 #[derive(Debug, Clone)]

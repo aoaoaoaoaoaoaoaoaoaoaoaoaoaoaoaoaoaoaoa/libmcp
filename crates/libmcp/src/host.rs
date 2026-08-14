@@ -14,16 +14,20 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    env,
     fs::{self, File},
     io::{self, Read as _, Write as _},
-    path::Path,
-    time::{Duration, Instant as StdInstant},
+    path::{Path, PathBuf},
+    time::{Duration, Instant as StdInstant, SystemTime},
 };
 use tempfile::{Builder as TempfileBuilder, TempPath};
 use thiserror::Error;
 
 /// Exact snapshot format understood by this release line.
 pub const SNAPSHOT_FORMAT_VERSION: u16 = 1;
+
+const SNAPSHOT_MAX_AGE: Duration = Duration::from_hours(1);
+const SNAPSHOT_MAX_FILES: usize = 128;
 
 /// Public MCP initialization phase, independent of worker readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1200,10 +1204,11 @@ where
             format!("failed to serialize host reexec snapshot: {error}"),
         )
     })?;
+    let snapshot_root = snapshot_root()?;
     let mut file = TempfileBuilder::new()
         .prefix(prefix)
         .suffix(".json")
-        .tempfile_in(std::env::temp_dir())?;
+        .tempfile_in(snapshot_root)?;
     file.write_all(&serialized)?;
     file.flush()?;
     file.as_file().sync_all()?;
@@ -1212,12 +1217,91 @@ where
     })
 }
 
+fn snapshot_root() -> io::Result<PathBuf> {
+    let runtime = env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let root = runtime.map_or_else(fallback_snapshot_root, |path| path.join("libmcp-snapshots"));
+    prepare_snapshot_root(&root)?;
+    prune_snapshot_root(&root)?;
+    Ok(root)
+}
+
+#[cfg(unix)]
+fn fallback_snapshot_root() -> PathBuf {
+    env::temp_dir().join(format!(
+        "libmcp-snapshots-{}",
+        rustix::process::getuid().as_raw()
+    ))
+}
+
+#[cfg(not(unix))]
+fn fallback_snapshot_root() -> PathBuf {
+    env::temp_dir().join("libmcp-snapshots")
+}
+
+fn prepare_snapshot_root(root: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(io::Error::other(format!(
+                "snapshot root `{}` is not a real directory",
+                root.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                fs::DirBuilder::new().mode(0o700).create(root)?;
+            }
+            #[cfg(not(unix))]
+            fs::create_dir(root)?;
+        }
+        Err(error) => return Err(error),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn prune_snapshot_root(root: &Path) -> io::Result<()> {
+    let now = SystemTime::now();
+    let mut capsules = fs::read_dir(root)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata
+                .is_file()
+                .then_some((metadata.modified().ok(), entry.path()))
+        })
+        .collect::<Vec<_>>();
+    capsules.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
+    for (index, (modified, path)) in capsules.into_iter().enumerate() {
+        let expired = modified
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > SNAPSHOT_MAX_AGE);
+        if expired || index >= SNAPSHOT_MAX_FILES {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Loads and deletes a snapshot file referenced by an environment variable.
 pub fn load_snapshot_file_from_env<T>(env_var: &str, max_bytes: usize) -> io::Result<Option<T>>
 where
     T: DeserializeOwned,
 {
-    let raw_path = std::env::var_os(env_var);
+    let raw_path = env::var_os(env_var);
     let Some(raw_path) = raw_path.filter(|value| !value.is_empty()) else {
         return Ok(None);
     };

@@ -1,4 +1,4 @@
-//! Append-only JSONL telemetry support.
+//! Bounded, record-atomic JSONL telemetry support.
 
 use crate::{
     jsonrpc::{RequestId, RpcMethod, ToolCallMeta},
@@ -17,6 +17,8 @@ use std::{
 };
 
 static TELEMETRY_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+const TELEMETRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Durability applied after each complete telemetry record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +96,7 @@ struct HotPathLine {
     max_latency_ms: u64,
 }
 
-/// Append-only telemetry log.
+/// Bounded JSONL telemetry log.
 #[derive(Debug)]
 pub struct TelemetryLog {
     sink: std::fs::File,
@@ -274,10 +276,10 @@ impl TelemetryLog {
             .lock()
             .map_err(|_| io::Error::other("telemetry append lock poisoned"))?;
         lock_file_append(&self.sink)?;
-        let write_result = self
-            .sink
-            .write_all(&record)
-            .and_then(|()| match self.flush_policy {
+        let write_result =
+            bounded_append(&mut self.sink, &record, TELEMETRY_MAX_BYTES).and_then(|()| match self
+                .flush_policy
+            {
                 TelemetryFlushPolicy::PageCache => Ok(()),
                 TelemetryFlushPolicy::Flush => self.sink.flush(),
                 TelemetryFlushPolicy::SyncData => self.sink.sync_data(),
@@ -286,6 +288,21 @@ impl TelemetryLog {
         drop(process_lock);
         write_result.and(unlock_result)
     }
+}
+
+fn bounded_append(file: &mut std::fs::File, record: &[u8], max_bytes: u64) -> io::Result<()> {
+    let record_bytes = u64::try_from(record.len())
+        .map_err(|_| io::Error::other("telemetry record length exceeds u64"))?;
+    if record_bytes > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("telemetry record exceeds {max_bytes} byte log bound"),
+        ));
+    }
+    if file.metadata()?.len().saturating_add(record_bytes) > max_bytes {
+        file.set_len(0)?;
+    }
+    file.write_all(record)
 }
 
 fn hot_path_line(path: &str, aggregate: &PathAggregate) -> io::Result<HotPathLine> {
@@ -322,7 +339,7 @@ fn unlock_file_append(file: &std::fs::File) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TelemetryFlushPolicy, TelemetryLog, ToolErrorDetail, ToolOutcome};
+    use super::{TelemetryFlushPolicy, TelemetryLog, ToolErrorDetail, ToolOutcome, bounded_append};
     use crate::jsonrpc::{RequestId, ToolCallMeta, ToolName};
     use serde_json::Value;
     use std::{fs, thread};
@@ -474,6 +491,25 @@ mod tests {
                 TelemetryFlushPolicy::PageCache,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn telemetry_storage_never_crosses_its_byte_bound() {
+        let dir = match tempdir() {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let path = dir.path().join("bounded.jsonl");
+        let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+        assert!(bounded_append(&mut file, b"first-record\n", 20).is_ok());
+        assert!(bounded_append(&mut file, b"second-record\n", 20).is_ok());
+        assert_eq!(
+            fs::read(path).ok().as_deref(),
+            Some(b"second-record\n".as_slice())
         );
     }
 }

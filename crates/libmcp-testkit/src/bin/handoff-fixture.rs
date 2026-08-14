@@ -12,7 +12,6 @@ use libmcp::{
 use libmcp_testkit as _;
 use serde as _;
 use serde_json::json;
-#[cfg(test)]
 use tempfile as _;
 
 const SERVER: &str = "handoff-fixture";

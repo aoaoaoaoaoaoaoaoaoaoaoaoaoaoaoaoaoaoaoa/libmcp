@@ -15,8 +15,6 @@ keywords.workspace = true
 libmcp = { version = "2.1.0", path = "../libmcp" }
 serde.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
 
 [lints]

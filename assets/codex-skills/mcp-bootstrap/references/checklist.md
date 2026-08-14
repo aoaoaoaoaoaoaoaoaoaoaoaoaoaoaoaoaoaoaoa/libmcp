@@ -35,8 +35,13 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Does health distinguish host lifecycle from worker handshake phase?
 - Do session-scoped health and telemetry survive churn and coordinated reexec?
 - Are terminal errors distinct from nonterminal recovery faults?
-- Is event telemetry append-only, record-atomic under concurrent writers, and
+- Is event telemetry bounded, record-atomic under concurrent writers, and
   explicit about flush durability?
+- Does every temporary tree, subprocess, lock, socket, and watcher acquire an
+  RAII owner immediately, with crash residue confined to an OS-owned or reaped
+  namespace?
+- Are logs, caches, build cells, and release generations bounded and
+  attributable?
 - Are reexec snapshots private, bounded, one-shot, version-exact, and validated
   before hydration?
 - Does the consumer run directly with no managed-release environment?
