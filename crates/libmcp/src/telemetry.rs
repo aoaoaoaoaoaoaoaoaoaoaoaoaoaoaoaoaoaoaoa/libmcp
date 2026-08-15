@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     fs::OpenOptions,
     io,
-    io::Write,
+    io::{Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -125,11 +125,13 @@ impl TelemetryLog {
             std::fs::create_dir_all(parent)?;
         }
         let mut options = OpenOptions::new();
-        let options = options.create(true).append(true);
+        let options = options.create(true);
         #[cfg(windows)]
-        // `append` alone may grant only FILE_APPEND_DATA on Windows; rollover
-        // truncation also requires generic write access.
+        // Rust deliberately withholds FILE_WRITE_DATA from append handles.
+        // The cross-process lock makes an explicit seek-and-write equivalent.
         let options = options.read(true).write(true);
+        #[cfg(not(windows))]
+        let options = options.append(true);
         let sink = options.open(path)?;
         let repo_root = render_path(repo_root, crate::render::PathStyle::Absolute, None);
         Ok(Self {
@@ -304,6 +306,7 @@ fn bounded_append(file: &mut std::fs::File, record: &[u8], max_bytes: u64) -> io
     if file.metadata()?.len().saturating_add(record_bytes) > max_bytes {
         file.set_len(0)?;
     }
+    let _end = file.seek(SeekFrom::End(0))?;
     file.write_all(record)
 }
 
@@ -504,9 +507,11 @@ mod tests {
         };
         let path = dir.path().join("bounded.jsonl");
         let mut options = fs::OpenOptions::new();
-        let options = options.create(true).append(true);
+        let options = options.create(true);
         #[cfg(windows)]
         let options = options.read(true).write(true);
+        #[cfg(not(windows))]
+        let options = options.append(true);
         let mut file = match options.open(&path) {
             Ok(file) => file,
             Err(_) => return,

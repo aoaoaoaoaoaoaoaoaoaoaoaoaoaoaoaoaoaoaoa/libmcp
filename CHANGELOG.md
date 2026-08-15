@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 2.2.2
+
+- use locked seek-and-write on Windows so bounded telemetry can truncate and
+  resume appends without relying on incompatible append-handle rights
+
 ## 2.2.1
 
 - preserve truncation rights for bounded telemetry logs on Windows
