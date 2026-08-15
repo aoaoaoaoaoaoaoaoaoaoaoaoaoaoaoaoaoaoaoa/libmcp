@@ -9,6 +9,7 @@ pub mod __macro {
     pub use serde_json;
 }
 
+pub mod effect;
 pub mod fault;
 pub mod health;
 pub mod host;
@@ -18,9 +19,13 @@ pub mod projection;
 pub mod render;
 pub mod replay;
 pub mod rollout;
+pub mod supervisor;
 pub mod telemetry;
 pub mod types;
 
+pub use effect::{
+    EffectContractError, EffectRecovery, SessionStateContract, ToolCatalog, ToolEffectContract,
+};
 pub use fault::{Fault, FaultClass, FaultCode, RecoveryHint};
 pub use health::{
     HealthSnapshot, LifecycleState, MethodTelemetry, OperationalLedger, OperationalMetricError,
@@ -62,6 +67,7 @@ pub use rollout::{
     LIBMCP_RELEASE_GENERATION_ENV, ReleaseId, ReleaseManifest, ReleaseObservation, ReleasePointer,
     ReleaseProvenance, ReleaseRuntime, StateCompatibility, load_release, verify_release,
 };
+pub use supervisor::{SupervisorConfig, SupervisorError, run_supervised};
 pub use telemetry::{TelemetryFlushPolicy, TelemetryLog, ToolErrorDetail, ToolOutcome};
 pub use types::{Generation, InvariantViolation};
 

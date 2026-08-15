@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the normative contract for `libmcp` `2.1.0`. Every
+This document defines the normative contract for `libmcp` `2.2.0`. Every
 library-owned `MUST` is a release gate backed by executable conformance
 evidence; consumer-owned `MUST` statements define the boundary the library
 cannot cross without domain or transport knowledge.
@@ -44,10 +44,12 @@ This library exists to make that posture reusable, exact, and versioned.
 The continuity plane owns shared vocabulary and mechanisms for:
 
 - request identity and JSON-RPC frame handling
+- a generic stable-stdio supervisor over disposable full-MCP workers
 - public-session continuity across worker churn
 - execution knowledge and replay contracts
+- private effect contracts extracted from `tools/list`
 - typed operational faults and recovery decisions
-- coordinated readiness-gated host handoff
+- readiness-gated business-generation rollover
 - health and telemetry base schemas
 - append-only event telemetry
 - recovery conformance tests
@@ -62,13 +64,12 @@ The presentation plane owns shared vocabulary and mechanisms for:
 
 The repository also owns the canonical `$mcp-bootstrap` skill.
 
-`libmcp` explicitly does not own:
+`libmcp` does not own:
 
 - domain tools or domain schemas
-- backend-specific request routing or warm-up heuristics
-- the public or private transport implementation
+- backend-specific request routing
 - domain-specific probes for uncertain side effects
-- eager building, process supervision, and release publication orchestration
+- eager building and release publication
 - long-term telemetry retention policy
 - crash-consistent session persistence
 - an obligation that every tool batch or support preview modes
@@ -78,17 +79,14 @@ The repository also owns the canonical `$mcp-bootstrap` skill.
 The stable host owns the public MCP transport and public session. A disposable
 worker owns fragile runtime dependencies and tool execution.
 
-The library supports both common worker shapes:
+The generic supervisor owns public stdio and talks to an ordinary full MCP
+server over private stdio. The business executable remains directly runnable;
+managed execution is an adapter around the same binary.
 
-1. a stable host talking to a private worker RPC
-2. a stable host proxying to a worker MCP server
-
-The invariants are shared; the worker wire shape is not.
-
-In this specification, continuity means survival of worker replacement and
-coordinated host handoff. It does not mean survival of host crashes, machine
-loss, public transport loss, or uncoordinated process termination. Snapshot
-handoff is not a durable persistence protocol.
+Continuity means survival of business-worker replacement and release rollover.
+It does not mean survival of host crashes, machine loss, or public transport
+loss. Kernel snapshots and host-handoff primitives are reusable mechanisms,
+not an automatic crash-persistence claim.
 
 ## Optional Release Plane
 
@@ -103,13 +101,15 @@ state compatibility contract. A mutable channel selects exactly one immutable
 manifest through atomic file replacement. Selection MUST NOT expose a partially
 written manifest or executable.
 
-Before a live handoff, the incumbent MUST stop at a complete-frame boundary and
-MUST NOT relinquish authority while its frame reader owns partial or read-ahead
-bytes. The successor receives the consumer-owned bounded snapshot through the
-existing one-shot capsule mechanism, initializes privately, and reports ready
-over a private barrier. Failure before activation leaves the incumbent
-authoritative. After activation acknowledgement, the incumbent MUST stop
-reading the public stream immediately.
+The supervisor initializes a candidate privately and refines its tool catalog
+before changing authority. A same-catalog candidate establishes a dispatch
+fence immediately. A changed catalog first emits
+`notifications/tools/list_changed`; the client's next `tools/list` request
+establishes the fence. Work accepted after the fence remains queued for the
+candidate. Work dispatched before it remains owned by the incumbent until a
+terminal response or worker loss. Activation occurs only after incumbent work
+drains and migratable session state is restored. Candidate failure before
+activation leaves the incumbent authoritative.
 
 Stateful releases declare the epochs they can read and the single epoch they
 write. Promotion is lawful only when the successor reads the incumbent's write
@@ -121,8 +121,7 @@ The following concepts are distinct:
 - the **public session** spans one public transport association and its
   initialization state, surviving worker replacement and coordinated host
   reexec
-- a **host process epoch** is one operating-system host process lifetime and
-  ends at reexec
+- a **host process epoch** is one operating-system host process lifetime
 - a **worker generation** identifies one worker incarnation within the public
   session
 - the **worker handshake phase** records whether that generation has been
@@ -154,16 +153,34 @@ before first worker dispatch. The contract belongs to the invocation after
 routing, not merely to the coarse JSON-RPC method: tool arguments or recovered
 domain state may affect replay legality.
 
-The shared vocabulary remains:
+The business vocabulary is deliberately small:
 
-- `Convergent`: after an arbitrarily completed prior attempt, another execution
-  is safe without additional observation; its externally visible effects are
-  observationally equivalent to one successful execution
-- `ProbeRequired`: after `OutcomeUnknown`, the invocation MUST remain held until
-  consumer-supplied evidence proves that it is already complete or safe to
-  dispatch again
-- `NeverReplay`: after `OutcomeUnknown`, the invocation MUST terminate with an
-  explicit ambiguous-outcome fault rather than run again automatically
+- `ReplaySafe`: another attempt is effect-equivalent to one complete attempt
+- `Deduplicated(k)`: a durable effect authority admits one commit for stable key
+  `k`
+- `ProbeRequired(q)`: domain evidence must report complete, safe to retry, or
+  still unknown
+- `AtMostOnce`: the host may dispatch one attempt; unknown outcome returns an
+  explicit ambiguity error
+
+The kernel projects `ReplaySafe` and `Deduplicated` to `Convergent`,
+`ProbeRequired` to `ProbeRequired`, and `AtMostOnce` to `NeverReplay`.
+The generic supervisor conservatively treats `ProbeRequired` as `AtMostOnce`
+until supplied with a domain probe adapter; it never wedges the public queue on
+an uncallable proof obligation.
+
+Effect recovery is orthogonal to rollover state:
+
+- `Stateless`
+- `Journaled(key)`, for successful replay-safe session transitions compacted by
+  a constant key or scalar request JSON Pointer and restored before activation
+- `Checkpointed(version)`, conservatively generation-pinned by the generic
+  supervisor until a checkpoint adapter exists
+- `GenerationPinned`
+
+Reserved `_meta["io.libmcp/effect"]` carries these contracts. The supervisor
+removes it from the public catalog. Legacy annotations remain a conservative
+compatibility source; absent evidence, a tool is `AtMostOnce`.
 
 A worker restart never authorizes request replay. A retry or recovery directive
 never overrides the replay contract. The library need not know how a
@@ -260,9 +277,11 @@ The reusable kernel provides mechanisms for:
 - bounded recovery queue surgery
 - deterministic recovery decisions
 - serialized snapshot and restore for coordinated host reexec
+- supervised full-MCP worker launch, handshake, catalog refinement, drain,
+  activation, recovery, and replay
 
-The kernel is transport-adjacent, not transport-prescriptive. Consumers own
-actual reads, writes, worker processes, probes, and rollout effects.
+The kernel remains transport-adjacent. `run_supervised` is its canonical stdio
+refinement; custom transports may compose the kernel directly.
 
 ## Reexec Snapshots
 
@@ -355,11 +374,11 @@ as a different identifier, number, path, or method.
 
 Consumers MUST:
 
-- assign a replay contract after domain routing and before dispatch
-- implement and explicitly report evidence for `ProbeRequired` invocations
-- own public and worker transport effects
-- define worker startup, warm-up, and rollout policy
-- preserve session-scoped health and telemetry state across coordinated reexec
+- declare an honest effect and session-state contract for each tool whose
+  standard annotations are insufficient
+- supply domain evidence before enabling automatic replay of `ProbeRequired`
+  invocations
+- keep initialization and `tools/list` free of externally visible effects
 - report host lifecycle and worker handshake phase as separate observed facts
 - shape domain faults without exposing raw backend spew by default
 - define actual concise and full model-facing projections
@@ -415,6 +434,9 @@ its credible violations. The minimum risk matrix covers:
 - duplicate request IDs and divergent frame identity
 - replay ordering, capacity exhaustion, and attempt accounting
 - worker initialization and public initialization interleavings
+- planned rollover with in-flight at-most-once work
+- candidate rejection and last-known-good crash recovery
+- public transport continuity across business-worker faults
 - snapshot corruption, incompatibility, and all-or-nothing restore
 - coordinated host reexec
 - concurrent telemetry emission
@@ -459,5 +481,6 @@ generic JSON-to-porcelain rendering. Projection traits, derive macros, and later
 hardening work landed after that tag and therefore belong to a subsequent
 release.
 
-The final runtime-adapter and deeper client/server lift remain future work and
-are not required for conformance to this specification.
+`2.2.0` adds the generic supervised full-MCP runtime, private effect contracts,
+session-journal restoration, readiness-gated worker rollover, and the formal
+semantics in `formal_semantics.md`.

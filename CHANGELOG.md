@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.2.0
+
+- add the generic stable-stdio supervisor for disposable full-MCP workers
+- add private effect-recovery and session-state contracts refined from
+  `tools/list`
+- add readiness-gated generation rollover, journal restoration, last-known-good
+  crash recovery, and conservative ambiguity handling
+- define the abstract machine, safety invariants, liveness assumptions, and
+  proof sketches in `formal_semantics.md`
+
 ## 2.1.0
 
 - add a lossless timed blocking frame reader for idle host control loops; it

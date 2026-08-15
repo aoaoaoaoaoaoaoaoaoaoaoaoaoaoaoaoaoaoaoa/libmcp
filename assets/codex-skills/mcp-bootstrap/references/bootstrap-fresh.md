@@ -2,38 +2,44 @@
 
 Use this when the MCP can still adopt the hard posture directly.
 
-## 1. Durable host, disposable worker
+## 1. Ordinary server, generic host
 
-Long-lived MCPs should separate durable session ownership from fragile backend
-execution.
+Write one ordinary full MCP executable. It must run directly from a shell.
+Managed deployment wraps that same executable with `libmcp::run_supervised`;
+the business project does not grow a second protocol or supervisor.
 
 - The host owns the public MCP transport, event-exact initialization state,
   request identities, execution knowledge, rollout, and user-facing faults.
 - The worker owns backend runtimes, backend-specific retries, and tool
   execution.
 - Keep the public session, host process epoch, and worker generation distinct.
-- Use `libmcp`'s host-session kernel and bounded, private, one-shot snapshot
-  capsules instead of rolling custom initialize seed and reexec glue.
+- Use the generic supervisor unless a different public transport is an explicit
+  product requirement. Custom transports compose the host-session kernel.
 
 If the worker dies, the session should survive.
 
-## 2. Replay as a typed contract
+## 2. Effects as a typed contract
 
-Every routed invocation needs an explicit replay contract before first worker
-dispatch:
+Declare private `io.libmcp/effect` metadata where standard annotations are not
+enough. Recovery has four forms:
 
-- `Convergent`
+- `ReplaySafe`
+- `Deduplicated(k)`
 - `ProbeRequired`
-- `NeverReplay`
+- `AtMostOnce`
+
+Session state is independently `Stateless`, `Journaled(key)`,
+`Checkpointed(version)`, or `GenerationPinned`. The generic supervisor restores
+journaled transitions and conservatively pins checkpointed state until a
+checkpoint adapter exists.
 
 Track whether it is `NotDispatched`, `InFlight`, `Completed`, or
 `OutcomeUnknown`. A first dispatch is not a replay; queueing does not consume a
 replay attempt; actual redispatch does.
 
-Do not add blanket retry logic. The contract belongs to the invocation after
-domain routing, not merely to a coarse JSON-RPC method. Hold `ProbeRequired`
-work until explicit domain evidence arrives, and terminate `NeverReplay` work
-with an ambiguous-outcome error after uncertain execution.
+Do not add blanket retry logic. Without a domain probe adapter, the generic
+supervisor gives `ProbeRequired` the stricter at-most-once treatment. Unknown
+`AtMostOnce` outcomes terminate with an explicit ambiguity error.
 
 ## 3. Typed faults
 
@@ -133,7 +139,6 @@ Cover, where credible:
 - worker loss before dispatch, during execution, and after completion
 - replay legality, probe barriers, attempt accounting, and capacity exhaustion
 - exact public and private initialization interleavings
-- coordinated reexec, corrupt capsules, and version rejection
-- rollout or restart churn
+- invalid candidates, in-flight rollover, crash recovery, and restart churn
 - model-facing output shaping
 - routing correctness where the backend is root-sensitive

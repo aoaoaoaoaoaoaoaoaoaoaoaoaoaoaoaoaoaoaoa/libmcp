@@ -3,17 +3,24 @@
 Use this checklist when reviewing a `libmcp` consumer.
 
 - Does a stable host own the public session?
+- Is the business executable still an ordinary directly runnable full MCP
+  server?
+- Does managed execution use the generic supervisor instead of consumer-local
+  host/worker machinery?
 - Are the public session, host epoch, and worker generation named separately?
 - Is the public session backed by the shared host-session kernel rather than
   ad hoc initialize/reexec glue?
 - Is public initialization driven only by exact observed client events?
-- Does every routed invocation receive a replay contract before dispatch?
+- Does every tool declare honest effect recovery and session-state treatment?
+- Does every routed invocation receive the corresponding immutable contract
+  before dispatch?
 - Does the host distinguish `NotDispatched`, `InFlight`, `Completed`, and
   `OutcomeUnknown`?
 - Do queued client frames remain distinct from replay-authorized dispatches?
 - Are replay attempts charged only on actual redispatch?
-- Does `ProbeRequired` remain blocked until explicit evidence arrives?
-- Does `NeverReplay` produce an explicit ambiguous-outcome error?
+- Is `ProbeRequired` either resolved by explicit evidence or conservatively
+  treated as at-most-once?
+- Does `AtMostOnce` produce an explicit ambiguous-outcome error?
 - Are process recovery and request disposition independent?
 - Are faults typed, with process hints kept advisory?
 - Do tool surfaces cross an explicit projection boundary rather than serializing
@@ -33,7 +40,7 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Is structured JSON still available where exact consumers need it?
 - Are inputs normalized where the semantics are still unambiguous?
 - Does health distinguish host lifecycle from worker handshake phase?
-- Do session-scoped health and telemetry survive churn and coordinated reexec?
+- Do session-scoped health and telemetry survive worker churn?
 - Are terminal errors distinct from nonterminal recovery faults?
 - Is event telemetry bounded, record-atomic under concurrent writers, and
   explicit about flush durability?
@@ -42,18 +49,15 @@ Use this checklist when reviewing a `libmcp` consumer.
   namespace?
 - Are logs, caches, build cells, and release generations bounded and
   attributable?
-- Are reexec snapshots private, bounded, one-shot, version-exact, and validated
-  before hydration?
 - Does the consumer run directly with no managed-release environment?
 - If managed rollout is supported, is the channel atomic, the release immutable,
   and the executable digest verified?
-- Does the incumbent retain the session until the successor has hydrated and
-  crossed a private readiness barrier?
-- Is process replacement deferred while a timed frame reader owns buffered
-  input?
+- Does the incumbent retain pre-fence work until terminal outcome while the
+  candidate initializes and restores privately?
+- Does changed-catalog rollover wait for the client's `tools/list` refresh?
 - Do promotion and rollback enforce declared state-epoch compatibility?
 - Does the unit-test layer avoid one change-shaped test per incident, branch,
   or matrix row?
-- Does the recovery matrix cover loss before dispatch, during execution, after
-  completion, probe barriers, queue exhaustion, and corrupt reexec handoff?
+- Does the recovery basis cover loss during execution, ambiguity, authorized
+  replay, session restore, invalid candidates, and transport continuity?
 - Is the installed `$mcp-bootstrap` skill sourced from this repository?

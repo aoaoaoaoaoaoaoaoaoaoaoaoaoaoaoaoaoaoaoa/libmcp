@@ -32,10 +32,11 @@ Read:
 
 Default pattern:
 
-- a stable host owns the public MCP transport, event-exact session state,
-  request identities, execution knowledge, rollout, and user-facing faults
-- a disposable worker owns fragile runtime dependencies and tool execution
-- each routed invocation receives an explicit replay contract before dispatch
+- business code is one ordinary standalone full MCP server
+- `libmcp::run_supervised` supplies the stable public host when a managed
+  release channel exists; do not duplicate supervision in the business server
+- private tool metadata declares effect recovery and session-state treatment
+- each routed invocation receives an explicit recovery contract before dispatch
 - process recovery and request replay remain orthogonal decisions
 - queued client work is not dispatch-authorized work
 - managed release channels remain optional; direct binary execution stays valid
@@ -64,7 +65,8 @@ Read:
 
 Retrofitting order:
 
-- separate the public session, host epoch, and worker generation
+- delete consumer-local host forests after the generic supervisor owns the
+  public session; retain one directly runnable business server
 - define execution knowledge, invocation replay contracts, and typed faults
   before adding retries
 - replace ad hoc dumps with porcelain-by-default output

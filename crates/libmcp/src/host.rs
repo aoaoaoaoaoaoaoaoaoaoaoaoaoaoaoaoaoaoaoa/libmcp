@@ -615,6 +615,18 @@ impl HostSessionKernel {
         self.pending.is_empty()
     }
 
+    /// Returns whether any invocation still depends on the current worker.
+    ///
+    /// Recovery-scheduled invocations remain pending for public identity and
+    /// ordering, but no longer prevent an empty replacement generation from
+    /// becoming active.
+    #[must_use]
+    pub fn has_in_flight_dispatches(&self) -> bool {
+        self.pending
+            .values()
+            .any(|request| request.scheduled_disposition.is_none())
+    }
+
     /// Returns immutable pending invocation state by public request ID.
     #[must_use]
     pub fn pending_request(&self, request_id: &RequestId) -> Option<&PendingRequest> {
@@ -1251,13 +1263,29 @@ fn prepare_snapshot_root(root: &Path) -> io::Result<()> {
         }
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt as _;
-                fs::DirBuilder::new().mode(0o700).create(root)?;
+            let created = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt as _;
+                    fs::DirBuilder::new().mode(0o700).create(root)
+                }
+                #[cfg(not(unix))]
+                {
+                    fs::create_dir(root)
+                }
+            };
+            if let Err(error) = created {
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+                let metadata = fs::symlink_metadata(root)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(io::Error::other(format!(
+                        "snapshot root `{}` raced with a non-directory",
+                        root.display()
+                    )));
+                }
             }
-            #[cfg(not(unix))]
-            fs::create_dir(root)?;
         }
         Err(error) => return Err(error),
     }
@@ -1653,7 +1681,7 @@ mod tests {
     fn snapshot_capsules_are_private_bounded_and_one_shot() {
         let value = json!({"format": 1, "secret": "state"});
         let capsule = write_snapshot_file("libmcp-test-", &value);
-        assert!(capsule.is_ok());
+        assert!(capsule.is_ok(), "snapshot capsule failed: {capsule:?}");
         let capsule = match capsule {
             Ok(capsule) => capsule,
             Err(_) => return,

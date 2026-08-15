@@ -7,8 +7,9 @@ servers:
 
 - typed replay contracts and operational faults
 - JSON-RPC request identity, frame IO, and tool-call metadata helpers
-- a bounded host-session kernel for worker churn and coordinated self-reexec
-- optional verified release channels and readiness-gated live host handoff
+- a bounded host-session kernel for worker churn
+- a generic stable-stdio supervisor over disposable full-MCP workers
+- verified release channels and readiness-gated blue/green rollover
 - shared health snapshots, telemetry snapshots, and append-only JSONL events
 - porcelain-by-default rendering, projection traits, and derive macros
 - model-facing normalization helpers
@@ -20,19 +21,18 @@ operational doctrine, but it is not part of the runtime crate API.
 
 ## Status
 
-`libmcp` `2.1` implements the machine-grade contract defined in
-`docs/spec.md`. The public workspace contains `libmcp`, `libmcp-derive`, and
-`libmcp-testkit`.
+`libmcp` `2.2` implements the contract in `docs/spec.md`; the abstract machine
+and proof sketches are in `formal_semantics.md`. The workspace contains
+`libmcp`, `libmcp-derive`, and `libmcp-testkit`.
 
 The continuity spine distinguishes public sessions, host epochs, worker
 generations, execution knowledge, and per-invocation replay contracts. Process
 recovery never confers replay authority; exact downstream conformance tests
 exercise churn, probe barriers, bounds, snapshots, and initialization.
 
-This release does not prescribe a single worker transport or ship runtime
-adapter crates. Consumers keep domain tools, backend routing, and worker
-transport local while reusing the shared replay, health, telemetry, host-session,
-rendering, projection, normalization, and optional release-channel primitives.
+`run_supervised` owns public stdio and proxies an ordinary full MCP executable
+over private stdio. The worker remains directly runnable without a release
+depot. Custom transports may compose the lower-level kernel.
 
 Managed rollout does not alter the standalone contract. With no
 `LIBMCP_RELEASE_CHANNEL` and `LIBMCP_RELEASE_GENERATION` environment, a consumer
@@ -43,6 +43,7 @@ no daemon, registry, or release store is required to build or run a consumer.
 ## Layout
 
 - `docs/spec.md`: normative design and versioning contract
+- `formal_semantics.md`: abstract machine, laws, and proof sketches
 - `crates/libmcp`: public library crate
 - `crates/libmcp-derive`: derive macros for projection traits
 - `crates/libmcp-testkit`: shared hardening fixtures and assertions

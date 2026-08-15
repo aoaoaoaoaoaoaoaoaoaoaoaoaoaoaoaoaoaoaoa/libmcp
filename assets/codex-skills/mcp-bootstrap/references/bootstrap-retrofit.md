@@ -5,9 +5,11 @@ scratch.
 
 ## Retrofit Order
 
-1. Separate the public session and host epoch from fragile worker generations.
-2. Journal execution knowledge and assign a typed replay contract to every
-   invocation before dispatch.
+1. Reduce the project to one ordinary standalone full MCP executable. Let the
+   generic supervisor own the managed public session; delete local host/worker
+   machinery once the cutover is proved.
+2. Declare tool effect recovery and session-state treatment. Let the host
+   assign the resulting immutable invocation contract before dispatch.
 3. Define typed operational faults with optional process hints; never encode
    request replay authority in a fault.
 4. Replace ad hoc backend dumps with porcelain-by-default output.
@@ -17,17 +19,16 @@ scratch.
    Do not rebrand pretty-printed JSON as porcelain. If the data is tabular,
    render a compact `|`-separated table with headers and unquoted scalar cells;
    reserve JSON-shaped porcelain for data that is genuinely tree-shaped.
-5. Make session-scoped health and telemetry survive worker churn and
-   coordinated reexec.
+5. Make session-scoped health and telemetry survive worker churn.
 6. Apply `$unit-test-doctrine` to any unit-test layer, then establish the
    smallest recovery basis that discriminates pre-dispatch, uncertain
-   execution, completion, probe barriers, capacity exhaustion, and corrupt
-   handoff where those risks exist.
+   execution, completion, ambiguity, capacity exhaustion, and candidate
+   rejection where those risks exist.
 7. Only then promise hot rollout or stronger operational guarantees.
 
-When `libmcp` is in play, prefer its host-session kernel, projection traits,
-derive macros, render helpers, health payloads, and telemetry log over
-consumer-local copies.
+Prefer `run_supervised`, the host-session kernel, projection traits, derive
+macros, render helpers, health payloads, and telemetry log over consumer-local
+copies.
 
 ## Specific Warnings
 
