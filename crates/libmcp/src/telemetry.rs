@@ -127,7 +127,9 @@ impl TelemetryLog {
         let mut options = OpenOptions::new();
         let options = options.create(true).append(true);
         #[cfg(windows)]
-        let options = options.read(true);
+        // `append` alone may grant only FILE_APPEND_DATA on Windows; rollover
+        // truncation also requires generic write access.
+        let options = options.read(true).write(true);
         let sink = options.open(path)?;
         let repo_root = render_path(repo_root, crate::render::PathStyle::Absolute, None);
         Ok(Self {
@@ -501,7 +503,11 @@ mod tests {
             Err(_) => return,
         };
         let path = dir.path().join("bounded.jsonl");
-        let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let mut options = fs::OpenOptions::new();
+        let options = options.create(true).append(true);
+        #[cfg(windows)]
+        let options = options.read(true).write(true);
+        let mut file = match options.open(&path) {
             Ok(file) => file,
             Err(_) => return,
         };

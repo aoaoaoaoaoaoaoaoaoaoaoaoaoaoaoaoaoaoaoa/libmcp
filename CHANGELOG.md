@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 2.2.1
+
+- preserve truncation rights for bounded telemetry logs on Windows
+
 ## 2.2.0
 
 - add the generic stable-stdio supervisor for disposable full-MCP workers
