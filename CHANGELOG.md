@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 2.3.1
+
+- pin Rust 1.97.1, which fixes the LLVM miscompilation shipped in 1.97.0
+
 ## 2.3.0
 
 - make changed-catalog rollover live after a finite client-refresh grace while
