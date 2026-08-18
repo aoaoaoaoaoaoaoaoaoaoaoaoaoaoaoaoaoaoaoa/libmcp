@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.3.0
+
+- make changed-catalog rollover live after a finite client-refresh grace while
+  preserving the incumbent's in-flight effects
+- own each business worker's Unix process group so rejection, rollover, and
+  host-task teardown reap descendant processes
+
 ## 2.2.2
 
 - use locked seek-and-write on Windows so bounded telemetry can truncate and

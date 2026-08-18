@@ -234,7 +234,7 @@ with:
 phase ::= Cold
         | Serving(g)
         | Preparing(g, h)
-        | AwaitingCatalogRefresh(g, h)
+        | AwaitingCatalogRefresh(g, h, δ)
         | Draining(g, h, κ)
         | Activating(g, h)
         | Recovering(g)
@@ -342,10 +342,11 @@ enters `Draining(g, h, κ)`. Requests with `seq ≥ κ` are accepted into the
 bounded queue but not dispatched.
 
 If catalogs differ, the host emits the appropriate MCP list-changed
-notification and enters `AwaitingCatalogRefresh(g, h)`. The incumbent continues
-serving. Receipt of the matching public list request chooses the fence and
-starts draining. If the client never refreshes, the incumbent remains active
-and usable; the candidate expires after a bounded interval.
+notification and enters `AwaitingCatalogRefresh(g, h, δ)`, where `δ` is a
+finite grace deadline. The incumbent continues serving. Receipt of the
+matching public list request, or expiry of `δ`, chooses the fence and starts
+draining. The notification gives a conforming client an opportunity to refresh;
+client inaction cannot retain an obsolete generation indefinitely.
 
 ### Drain and Activation
 
@@ -367,10 +368,11 @@ Activating(g, h)
 Serving(h)
 ```
 
-Catalog-refresh activation returns `h`'s public catalog in the refresh response
-at the activation boundary. Identical-catalog activation is silent. Queued
-invocations then dispatch to `h` in sequence order. Only after activation and
-queue transfer may `g` be terminated and reaped.
+If a refresh request established the fence, activation returns `h`'s public
+catalog in that response. A refresh arriving during grace-expiry draining is
+queued and answered after activation. Identical-catalog activation is silent.
+Queued invocations then dispatch to `h` in sequence order. Only after activation
+and queue transfer may `g` be terminated and reaped.
 
 If restoration fails, `h` is destroyed, the fence is removed, and queued work
 returns to `g` in order. No candidate state is merged into `g`.
@@ -472,8 +474,11 @@ fence.
 ### I10. Catalog Coherence
 
 Every invocation dispatched after activation is classified against the active
-generation's public catalog. A changed catalog becomes authoritative only
-through the MCP list-change and refresh protocol.
+generation's public catalog. A changed catalog becomes authoritative only at
+activation, after a list-change notification and either a matching refresh
+request or expiry of the finite refresh grace. A stale client call is rejected
+or classified by the authoritative catalog; it is never dispatched under the
+retired catalog's effect law.
 
 ### I11. Boundedness
 
@@ -623,9 +628,7 @@ Assume:
 - `A6` restart budgets admit a healthy worker after finitely many failures;
 - `A7` every required probe eventually returns a decisive answer;
 - `A8` every generation-pinned invocation or obligation eventually terminates
-  or is lawfully cancelled;
-- `A9` the client performs an advertised catalog refresh when it requires the
-  changed catalog.
+  or is lawfully cancelled.
 
 ### Theorem 10. Request Termination
 
@@ -642,14 +645,14 @@ preserves uniqueness.
 
 ### Theorem 11. Rollover Progress
 
-Under `A1`–`A5`, `A8`, and `A9`, a selected valid compatible candidate
-eventually becomes active.
+Under `A1`–`A5` and `A8`, a selected valid compatible candidate eventually
+becomes active.
 
 **Sketch.** Preparation terminates and yields a ready candidate. Catalog
-refresh either is unnecessary or occurs by `A9`. The fence admits no new work
-to the incumbent. The finite pre-fence set and pinned obligations terminate by
-`A5` and `A8`. Bounded state restoration terminates by `A3`. Activation is then
-continuously enabled and occurs by fair scheduling.
+refresh either arrives or its finite grace expires. The fence admits no new
+work to the incumbent. The finite pre-fence set and pinned obligations terminate
+by `A5` and `A8`. Bounded state restoration terminates by `A3`. Activation is
+then continuously enabled and occurs by fair scheduling.
 
 ### Theorem 12. Worker-Recovery Progress
 
@@ -758,7 +761,7 @@ An implementation conforms only if it supplies these witnesses.
 | terminal uniqueness | pending-map removal and tombstone/late-response rejection |
 | journal prefix | update after successful worker response, before public reply |
 | atomic restore | construct candidate state off-path, activate only on success |
-| catalog coherence | canonical public digest and refresh barrier |
+| catalog coherence | canonical public digest, notification, finite grace, and activation point |
 | boundedness | checked capacities and deadlines for every collection/resource |
 | RAII | owning process/pipe/temp/timer guards with explicit transfer |
 
@@ -773,7 +776,8 @@ adversarial matrix is:
 5. at-most-once loss yields one ambiguity error and later calls remain live;
 6. probe-required work either waits for decisive evidence or receives the
    stricter at-most-once treatment;
-7. changed catalog activates only through list-change refresh;
+7. changed catalog activates after refresh or bounded grace without dispatching
+   stale calls under the retired effect law;
 8. identical catalog cuts over silently at a quiescent fence;
 9. session restoration preserves the successful transition prefix;
 10. cancellation and nested requests remain generation-pinned;

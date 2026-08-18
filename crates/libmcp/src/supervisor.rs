@@ -26,7 +26,7 @@ const JOURNAL_MAX_BYTES: usize = 1024 * 1024;
 const MAX_REPLAY_ATTEMPTS: u8 = 1;
 const CHANNEL_POLL: Duration = Duration::from_millis(500);
 const CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
-const CANDIDATE_RETENTION: Duration = Duration::from_mins(2);
+const CATALOG_REFRESH_GRACE: Duration = Duration::from_secs(1);
 const RECOVERY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Complete launch contract for one stable supervised MCP session.
@@ -157,7 +157,55 @@ struct Candidate {
     worker: WorkerHandle,
     purpose: CandidatePurpose,
     stage: CandidateStage,
-    deadline: Instant,
+    deadline: Option<Instant>,
+}
+
+#[derive(Debug)]
+struct ProcessTreeOwner {
+    #[cfg(unix)]
+    leader: rustix::process::Pid,
+    armed: bool,
+}
+
+impl ProcessTreeOwner {
+    fn new(child: &Child) -> Result<Self, SupervisorError> {
+        #[cfg(unix)]
+        let leader = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .ok_or_else(|| {
+                SupervisorError::Contract("spawned worker has no valid process ID".to_owned())
+            })?;
+        Ok(Self {
+            #[cfg(unix)]
+            leader,
+            armed: true,
+        })
+    }
+
+    fn kill(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        #[cfg(unix)]
+        if let Err(error) =
+            rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL)
+            && error != rustix::io::Errno::SRCH
+        {
+            eprintln!(
+                "libmcp: failed to kill worker process group {}: {error}",
+                self.leader.as_raw_pid()
+            );
+        }
+    }
+}
+
+impl Drop for ProcessTreeOwner {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -320,6 +368,8 @@ impl Supervisor {
         let token = self.next_worker;
         let (sender, receiver) = mpsc::channel(WORKER_COMMAND_CAPACITY);
         let mut command = Command::new(release.executable());
+        #[cfg(unix)]
+        let _process_group = command.process_group(0);
         let child = command
             .args(release.arguments())
             .args(&self.config.argument_overrides)
@@ -331,9 +381,11 @@ impl Supervisor {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
+        let process_tree = ProcessTreeOwner::new(&child)?;
         spawn_worker_io(
             token,
             child,
+            process_tree,
             receiver,
             self.events.clone(),
             self.config.frame_limit,
@@ -399,6 +451,9 @@ impl Supervisor {
                 if self.phase == RolloverPhase::AwaitingCatalogRefresh {
                     self.refresh_request = Some(frame);
                     self.phase = RolloverPhase::Draining;
+                    if let Some(candidate) = self.candidate.as_mut() {
+                        candidate.deadline = None;
+                    }
                     self.try_begin_restore(stdout).await
                 } else if self.gating_new_work() {
                     self.queue_or_reject(frame, stdout).await
@@ -612,7 +667,7 @@ impl Supervisor {
                 };
                 candidate.worker.catalog = Some(catalog.clone());
                 candidate.stage = CandidateStage::Ready;
-                candidate.deadline = Instant::now() + CANDIDATE_RETENTION;
+                candidate.deadline = Some(Instant::now() + CATALOG_REFRESH_GRACE);
                 self.on_candidate_ready(catalog, stdout).await
             }
             InternalAction::RestoreJournal { index } => {
@@ -651,6 +706,9 @@ impl Supervisor {
                     .unwrap_or("unknown")
             );
             self.phase = RolloverPhase::Draining;
+            if let Some(candidate) = self.candidate.as_mut() {
+                candidate.deadline = None;
+            }
             return self.try_begin_restore(stdout).await;
         }
 
@@ -703,6 +761,7 @@ impl Supervisor {
             return Ok(());
         };
         candidate.stage = CandidateStage::Restoring;
+        candidate.deadline = Some(Instant::now() + CANDIDATE_TIMEOUT);
         let token = candidate.worker.token;
         let id = self.internal_id(token, "journal")?;
         let frame = rewrite_id(self.journal.entries[index].frame.value(), &id)?;
@@ -838,7 +897,7 @@ impl Supervisor {
             worker,
             purpose: CandidatePurpose::Recovery,
             stage: CandidateStage::Initializing,
-            deadline: Instant::now() + CANDIDATE_TIMEOUT,
+            deadline: Some(Instant::now() + CANDIDATE_TIMEOUT),
         });
         if let Err(error) = self.seed_candidate_initialize(token).await {
             if let Some(candidate) = self.candidate.take() {
@@ -855,8 +914,24 @@ impl Supervisor {
         W: AsyncWrite + Unpin,
     {
         if let Some(candidate) = self.candidate.as_ref()
-            && Instant::now() >= candidate.deadline
+            && candidate
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
         {
+            if candidate.purpose == CandidatePurpose::Rollover
+                && matches!(candidate.stage, CandidateStage::Ready)
+                && self.phase == RolloverPhase::AwaitingCatalogRefresh
+            {
+                eprintln!(
+                    "libmcp: {}: client did not refresh catalog; draining with authoritative successor catalog",
+                    self.config.server
+                );
+                self.phase = RolloverPhase::Draining;
+                if let Some(candidate) = self.candidate.as_mut() {
+                    candidate.deadline = None;
+                }
+                return self.try_begin_restore(stdout).await;
+            }
             let purpose = candidate.purpose;
             self.reject_candidate("candidate deadline expired", stdout)
                 .await?;
@@ -946,7 +1021,7 @@ impl Supervisor {
             worker,
             purpose: CandidatePurpose::Rollover,
             stage: CandidateStage::Initializing,
-            deadline: Instant::now() + CANDIDATE_TIMEOUT,
+            deadline: Some(Instant::now() + CANDIDATE_TIMEOUT),
         });
         if let Err(error) = self.seed_candidate_initialize(token).await {
             self.reject_candidate(&error.to_string(), stdout).await?;
@@ -1436,6 +1511,7 @@ fn spawn_client_reader(events: mpsc::Sender<Event>, limit: FrameLimit) {
 fn spawn_worker_io(
     token: u64,
     mut child: Child,
+    mut process_tree: ProcessTreeOwner,
     mut commands: mpsc::Receiver<WorkerCommand>,
     events: mpsc::Sender<Event>,
     limit: FrameLimit,
@@ -1451,6 +1527,7 @@ fn spawn_worker_io(
     let _worker = tokio::spawn(async move {
         let detail = worker_io_loop(
             &mut child,
+            &mut process_tree,
             stdin,
             stdout,
             &mut commands,
@@ -1466,6 +1543,7 @@ fn spawn_worker_io(
 
 async fn worker_io_loop(
     child: &mut Child,
+    process_tree: &mut ProcessTreeOwner,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     commands: &mut mpsc::Receiver<WorkerCommand>,
@@ -1479,12 +1557,12 @@ async fn worker_io_loop(
             frame = crate::read_frame(&mut stdout, limit) => match frame {
                 Ok(FrameReadOutcome::Frame(payload)) => {
                     if events.send(Event::WorkerFrame { token, payload }).await.is_err() {
-                        let _killed = child.kill().await;
-                        let _status = child.wait().await;
+                        kill_worker_tree(child, process_tree).await;
                         return "host event receiver closed".to_owned();
                     }
                 }
                 Ok(FrameReadOutcome::EndOfStream) => {
+                    process_tree.kill();
                     let status = child.wait().await;
                     return match status {
                         Ok(status) => format!("worker exited with {status}"),
@@ -1492,27 +1570,30 @@ async fn worker_io_loop(
                     };
                 }
                 Err(error) => {
-                    let _killed = child.kill().await;
-                    let _status = child.wait().await;
+                    kill_worker_tree(child, process_tree).await;
                     return format!("worker output failed: {error}");
                 }
             },
             command = commands.recv() => match command {
                 Some(WorkerCommand::Frame(payload)) => {
                     if let Err(error) = write_frame(&mut stdin, &payload, limit).await {
-                        let _killed = child.kill().await;
-                        let _status = child.wait().await;
+                        kill_worker_tree(child, process_tree).await;
                         return format!("worker input failed: {error}");
                     }
                 }
                 Some(WorkerCommand::Kill) | None => {
-                    let _killed = child.kill().await;
-                    let _status = child.wait().await;
+                    kill_worker_tree(child, process_tree).await;
                     return "worker reaped by host".to_owned();
                 }
             }
         }
     }
+}
+
+async fn kill_worker_tree(child: &mut Child, process_tree: &mut ProcessTreeOwner) {
+    process_tree.kill();
+    let _killed = child.kill().await;
+    let _status = child.wait().await;
 }
 
 fn parse_catalog_response(frame: &FramedMessage) -> Result<ToolCatalog, SupervisorError> {

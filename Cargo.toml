@@ -10,8 +10,8 @@ homepage = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp"
 keywords = ["mcp", "tooling", "ai", "json-rpc", "operations"]
 license = "Apache-2.0"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp"
-rust-version = "1.94"
-version = "2.2.2"
+rust-version = "1.97"
+version = "2.3.0"
 
 [workspace.dependencies]
 assert_matches = "1.5.0"

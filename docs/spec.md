@@ -104,12 +104,13 @@ written manifest or executable.
 The supervisor initializes a candidate privately and refines its tool catalog
 before changing authority. A same-catalog candidate establishes a dispatch
 fence immediately. A changed catalog first emits
-`notifications/tools/list_changed`; the client's next `tools/list` request
-establishes the fence. Work accepted after the fence remains queued for the
-candidate. Work dispatched before it remains owned by the incumbent until a
-terminal response or worker loss. Activation occurs only after incumbent work
-drains and migratable session state is restored. Candidate failure before
-activation leaves the incumbent authoritative.
+`notifications/tools/list_changed`; the client's next `tools/list` request or
+expiry of a finite grace establishes the fence. Work accepted after the fence
+remains queued for the candidate. Work dispatched before it remains owned by
+the incumbent until a terminal response or worker loss. Activation occurs only
+after incumbent work drains and migratable session state is restored. Candidate
+failure before activation leaves the incumbent authoritative. Client failure
+to refresh cannot retain an obsolete generation indefinitely.
 
 Stateful releases declare the epochs they can read and the single epoch they
 write. Promotion is lawful only when the successor reads the incumbent's write
