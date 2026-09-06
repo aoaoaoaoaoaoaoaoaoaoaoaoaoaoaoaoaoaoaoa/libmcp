@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- ratchet the Rust toolchain to 1.98.0
+- make worker spawning synchronous; it performs no asynchronous work
+
 ## 2.3.1
 
 - pin Rust 1.97.1, which fixes the LLVM miscompilation shipped in 1.97.0

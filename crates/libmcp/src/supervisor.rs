@@ -318,7 +318,7 @@ impl Supervisor {
             refresh_request: None,
             events,
         };
-        let initial = supervisor.spawn_worker(config.initial).await?;
+        let initial = supervisor.spawn_worker(config.initial)?;
         supervisor.active = Some(initial);
 
         let mut stdout = tokio::io::stdout();
@@ -356,10 +356,7 @@ impl Supervisor {
         }
     }
 
-    async fn spawn_worker(
-        &mut self,
-        release: ReleaseManifest,
-    ) -> Result<WorkerHandle, SupervisorError> {
+    fn spawn_worker(&mut self, release: ReleaseManifest) -> Result<WorkerHandle, SupervisorError> {
         verify_release(&release)?;
         self.next_worker = self
             .next_worker
@@ -882,7 +879,7 @@ impl Supervisor {
     {
         let release = self.recovery_release.clone();
         verify_release(&release)?;
-        let worker = self.spawn_worker(release).await?;
+        let worker = self.spawn_worker(release)?;
         if matches!(
             self.kernel.session_phase(),
             SessionPhase::Cold | SessionPhase::Initializing
@@ -1000,7 +997,7 @@ impl Supervisor {
             return Ok(());
         }
         let generation = release.generation().clone();
-        let worker = match self.spawn_worker(release).await {
+        let worker = match self.spawn_worker(release) {
             Ok(worker) => worker,
             Err(error) => {
                 self.rejected_generation = Some(generation);
