@@ -13,7 +13,7 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncWrite, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::mpsc,
+    sync::{mpsc, watch},
     time::{Instant, interval},
 };
 
@@ -112,29 +112,24 @@ enum Event {
 }
 
 #[derive(Debug)]
-enum WorkerCommand {
-    Frame(Vec<u8>),
-    Kill,
-}
-
-#[derive(Debug)]
 struct WorkerHandle {
     token: u64,
     release: ReleaseManifest,
-    sender: mpsc::Sender<WorkerCommand>,
+    sender: mpsc::Sender<Vec<u8>>,
+    retire: watch::Sender<()>,
     catalog: Option<ToolCatalog>,
 }
 
 impl WorkerHandle {
     async fn send(&self, frame: Vec<u8>) -> Result<(), SupervisorError> {
         self.sender
-            .send(WorkerCommand::Frame(frame))
+            .send(frame)
             .await
             .map_err(|_| SupervisorError::Contract("worker command channel closed".to_owned()))
     }
 
     fn kill(&self) {
-        let _sent = self.sender.try_send(WorkerCommand::Kill);
+        self.retire.send_replace(());
     }
 }
 
@@ -364,6 +359,7 @@ impl Supervisor {
             .ok_or_else(|| SupervisorError::Contract("worker identity exhausted".to_owned()))?;
         let token = self.next_worker;
         let (sender, receiver) = mpsc::channel(WORKER_COMMAND_CAPACITY);
+        let (retire, retired) = watch::channel(());
         let mut command = Command::new(release.executable());
         #[cfg(unix)]
         let _process_group = command.process_group(0);
@@ -384,6 +380,7 @@ impl Supervisor {
             child,
             process_tree,
             receiver,
+            retired,
             self.events.clone(),
             self.config.frame_limit,
         )?;
@@ -391,6 +388,7 @@ impl Supervisor {
             token,
             release,
             sender,
+            retire,
             catalog: None,
         })
     }
@@ -1509,7 +1507,8 @@ fn spawn_worker_io(
     token: u64,
     mut child: Child,
     mut process_tree: ProcessTreeOwner,
-    mut commands: mpsc::Receiver<WorkerCommand>,
+    mut commands: mpsc::Receiver<Vec<u8>>,
+    retired: watch::Receiver<()>,
     events: mpsc::Sender<Event>,
     limit: FrameLimit,
 ) -> Result<(), SupervisorError> {
@@ -1528,6 +1527,7 @@ fn spawn_worker_io(
             stdin,
             stdout,
             &mut commands,
+            retired,
             &events,
             token,
             limit,
@@ -1543,48 +1543,55 @@ async fn worker_io_loop(
     process_tree: &mut ProcessTreeOwner,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
-    commands: &mut mpsc::Receiver<WorkerCommand>,
+    commands: &mut mpsc::Receiver<Vec<u8>>,
+    mut retired: watch::Receiver<()>,
     events: &mpsc::Sender<Event>,
     token: u64,
     limit: FrameLimit,
 ) -> String {
-    let mut stdout = BufReader::new(stdout);
-    loop {
-        tokio::select! {
-            frame = crate::read_frame(&mut stdout, limit) => match frame {
+    // A frame read owns consumed bytes until its delimiter arrives. Selecting
+    // it anew for each command discards partial responses. Likewise, a blocked
+    // input write must not prevent output draining from a synchronous worker.
+    let reader = async {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            match crate::read_frame(&mut stdout, limit).await {
                 Ok(FrameReadOutcome::Frame(payload)) => {
-                    if events.send(Event::WorkerFrame { token, payload }).await.is_err() {
-                        kill_worker_tree(child, process_tree).await;
+                    if events
+                        .send(Event::WorkerFrame { token, payload })
+                        .await
+                        .is_err()
+                    {
                         return "host event receiver closed".to_owned();
                     }
                 }
-                Ok(FrameReadOutcome::EndOfStream) => {
-                    process_tree.kill();
-                    let status = child.wait().await;
-                    return match status {
-                        Ok(status) => format!("worker exited with {status}"),
-                        Err(error) => format!("worker stdout closed; wait failed: {error}"),
-                    };
-                }
-                Err(error) => {
-                    kill_worker_tree(child, process_tree).await;
-                    return format!("worker output failed: {error}");
-                }
-            },
-            command = commands.recv() => match command {
-                Some(WorkerCommand::Frame(payload)) => {
-                    if let Err(error) = write_frame(&mut stdin, &payload, limit).await {
-                        kill_worker_tree(child, process_tree).await;
-                        return format!("worker input failed: {error}");
-                    }
-                }
-                Some(WorkerCommand::Kill) | None => {
-                    kill_worker_tree(child, process_tree).await;
-                    return "worker reaped by host".to_owned();
-                }
+                Ok(FrameReadOutcome::EndOfStream) => return "worker stdout closed".to_owned(),
+                Err(error) => return format!("worker output failed: {error}"),
             }
         }
-    }
+    };
+    let writer = async {
+        while let Some(payload) = commands.recv().await {
+            if let Err(error) = write_frame(&mut stdin, &payload, limit).await {
+                return format!("worker input failed: {error}");
+            }
+        }
+        "host command channel closed".to_owned()
+    };
+    let detail = tokio::select! {
+        biased;
+        // Retirement has its own signal: a full command mailbox or blocked
+        // pipe cannot delay it. Dropping the handle also closes this signal.
+        _ = retired.changed() => "worker reaped by host".to_owned(),
+        status = child.wait() => match status {
+            Ok(status) => format!("worker exited with {status}"),
+            Err(error) => format!("worker wait failed: {error}"),
+        },
+        detail = reader => detail,
+        detail = writer => detail,
+    };
+    kill_worker_tree(child, process_tree).await;
+    detail
 }
 
 async fn kill_worker_tree(child: &mut Child, process_tree: &mut ProcessTreeOwner) {

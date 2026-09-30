@@ -33,6 +33,9 @@ exercise churn, probe barriers, bounds, snapshots, and initialization.
 `run_supervised` owns public stdio and proxies an ordinary full MCP executable
 over private stdio. The worker remains directly runnable without a release
 depot. Custom transports may compose the lower-level kernel.
+Private input and output progress independently; pending frame reads survive
+concurrent writes. Worker retirement bypasses the bounded command mailbox and
+interrupts blocked I/O before reaping the process tree.
 
 Managed rollout does not alter the standalone contract. With no
 `LIBMCP_RELEASE_CHANNEL` and `LIBMCP_RELEASE_GENERATION` environment, a consumer
