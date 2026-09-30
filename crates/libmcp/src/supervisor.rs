@@ -1555,6 +1555,8 @@ async fn worker_io_loop(
     // A frame read owns consumed bytes until its delimiter arrives. Selecting
     // it anew for each command discards partial responses. Likewise, a blocked
     // input write must not prevent output draining from a synchronous worker.
+    // Observe termination at output EOF, not child.wait(): a worker can exit
+    // with complete replies still buffered in its pipe.
     let reader = async {
         let mut stdout = BufReader::new(stdout);
         loop {
@@ -1586,10 +1588,6 @@ async fn worker_io_loop(
         // Retirement has its own signal: a full command mailbox or blocked
         // pipe cannot delay it. Dropping the handle also closes this signal.
         _ = retired.changed() => "worker reaped by host".to_owned(),
-        status = child.wait() => match status {
-            Ok(status) => format!("worker exited with {status}"),
-            Err(error) => format!("worker wait failed: {error}"),
-        },
         detail = reader => detail,
         detail = writer => detail,
     };
