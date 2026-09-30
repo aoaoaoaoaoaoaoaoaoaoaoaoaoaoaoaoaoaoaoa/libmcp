@@ -18,9 +18,12 @@ use tokio::{
 };
 
 const EVENT_CAPACITY: usize = 64;
-const WORKER_COMMAND_CAPACITY: usize = 8;
 const QUEUE_CAPACITY: usize = 128;
 const PENDING_CAPACITY: usize = 128;
+// Every admitted request must fit without waiting for responses to drain.
+// Otherwise a full output event queue can block the worker reader while the
+// host waits on its input mailbox, forming a circular backpressure dependency.
+const WORKER_COMMAND_CAPACITY: usize = PENDING_CAPACITY;
 const JOURNAL_MAX_ENTRIES: usize = 32;
 const JOURNAL_MAX_BYTES: usize = 1024 * 1024;
 const MAX_REPLAY_ATTEMPTS: u8 = 1;
