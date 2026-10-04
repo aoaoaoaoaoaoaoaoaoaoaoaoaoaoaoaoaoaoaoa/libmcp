@@ -15,7 +15,9 @@ scratch.
 4. Replace ad hoc backend dumps with porcelain-by-default output.
    Make the render exclusive: never return the porcelain and the structured
    projection together, and never echo structured JSON as text.
-   Make `render` and `detail` orthogonal before you start bikeshedding prose.
+   Make rendering independent of the tool's content controls: fixed controls
+   must expose the same facts in porcelain and JSON. Repair JSON-only information
+   paths; do not require a universal detail enum or scalar.
    Do not rebrand pretty-printed JSON as porcelain. If the data is tabular,
    render a compact `|`-separated table with headers and unquoted scalar cells;
    reserve JSON-shaped porcelain for data that is genuinely tree-shaped.

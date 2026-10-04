@@ -21,9 +21,13 @@ operational doctrine, but it is not part of the runtime crate API.
 
 ## Status
 
-`libmcp` `2.2` implements the contract in `docs/spec.md`; the abstract machine
-and proof sketches are in `formal_semantics.md`. The workspace contains
+`libmcp` `2.2` has its normative contract in [docs/spec.md](docs/spec.md); the abstract
+machine and proof sketches are in `formal_semantics.md`. The workspace contains
 `libmcp`, `libmcp-derive`, and `libmcp-testkit`.
+
+The [presentation contract](docs/spec.md#presentation-guarantees) separates
+rendering from content selection: changing render must not reveal new information.
+Tools choose their own detail modes or content axes; compact porcelain is the default.
 
 The continuity spine distinguishes public sessions, host epochs, worker
 generations, execution knowledge, and per-invocation replay contracts. Process

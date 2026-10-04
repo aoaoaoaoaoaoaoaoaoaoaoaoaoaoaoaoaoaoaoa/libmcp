@@ -31,13 +31,16 @@ Use this checklist when reviewing a `libmcp` consumer.
 - Does porcelain avoid JSON unless the data is irreducibly tree-shaped?
 - Do tabular results render as compact tables with headers, `|` separators, and
   unquoted scalar cells?
-- Are `render` and `detail` treated as orthogonal controls?
-- Does `detail=concise` return an actual summary rather than the full payload?
+- At fixed detail/view/content controls, do both renders expose the same facts,
+  including diagnostics, uncertainty, recovery, and paginated information?
+- Are content controls tool-appropriate rather than a mandatory scalar/enum?
+- When concise/full modes exist, is concise an actual summary in both renders?
 - Are the projection traits or derive-macro happy path used on hot surfaces,
   with generic JSON fallbacks reserved for explicit escape hatches?
 - Are library render helpers used where bespoke porcelain has not yet been
   justified?
-- Is structured JSON still available where exact consumers need it?
+- Is JSON reserved for genuine structured consumers, with no docs recommending
+  it for the model to recover information unavailable in porcelain?
 - Are inputs normalized where the semantics are still unambiguous?
 - Does health distinguish host lifecycle from worker handshake phase?
 - Do session-scoped health and telemetry survive worker churn?

@@ -344,10 +344,20 @@ explicit flush policy. Rotation and retention remain consumer obligations.
 
 ## Presentation Guarantees
 
-`render` and `detail` are orthogonal:
+Rendering and content selection MUST be orthogonal:
 
-- `render=porcelain|json` selects text or structured output
-- `detail=concise|full` selects summary or expanded projection
+- `render=porcelain|json` selects how a projection is represented.
+- Detail, view, and other content controls select what the projection contains.
+
+For fixed content controls, both renderings MUST preserve the same semantic
+information. Formatting, grouping, and scalar spelling MAY differ without changing
+values or meaning. Switching to JSON MUST NOT reveal facts unavailable in
+porcelain, including diagnostics, uncertainty, or recovery information.
+Bounds and pagination MUST NOT make JSON the only route to omitted information.
+
+`detail=concise|full` is a shared library convention, not a required vocabulary or
+shape for every tool. Tools MAY use specialized modes or multiple content axes,
+and a fixed-content tool need not invent a detail selector.
 
 The selected render is exclusive at the model boundary. A porcelain result
 MUST NOT also carry the same projection in `structuredContent`; a JSON result
@@ -364,8 +374,9 @@ Projection policy declared as enforced MUST be checked before model-facing
 output is returned. A policy flag that only documents an aspiration MUST NOT be
 represented as an enforced guarantee.
 
-`json + full` is the authoritative model-facing projection. It is not
-necessarily a lossless serialization of the backing domain or storage object.
+The selected model-facing projection is authoritative before rendering. Even a
+complete projection need not serialize the entire backing domain or storage
+object; internal or private data does not become public merely for render parity.
 
 Normalization MUST preserve the unambiguous value represented by valid input
 or return an error. It MUST NOT silently round, saturate, or reinterpret a value
@@ -382,7 +393,8 @@ Consumers MUST:
 - keep initialization and `tools/list` free of externally visible effects
 - report host lifecycle and worker handshake phase as separate observed facts
 - shape domain faults without exposing raw backend spew by default
-- define actual concise and full model-facing projections
+- define content projections independently of rendering, using content controls
+  appropriate to the tool rather than requiring a universal detail taxonomy
 - emit exactly one model-facing representation of each successful projection
 - protect sensitive request and telemetry content according to local policy
 
@@ -391,8 +403,10 @@ request shape, HTTP or JSON-RPC method name, or absence of an observed response.
 
 ## Model UX Doctrine
 
-Nontrivial tools SHOULD default to `porcelain + concise`. Structured JSON SHOULD
-remain available for exact consumers.
+Nontrivial tools SHOULD default to compact porcelain. Structured JSON SHOULD
+remain available for consumers that actually require structured input, not as a
+full-information reading mode for the model. Missing information in porcelain is
+a contract defect, not a reason to recommend JSON for model understanding.
 
 Porcelain SHOULD be:
 
@@ -441,7 +455,7 @@ its credible violations. The minimum risk matrix covers:
 - snapshot corruption, incompatibility, and all-or-nothing restore
 - coordinated host reexec
 - concurrent telemetry emission
-- bounded and unambiguous rendering
+- bounded, unambiguous, information-preserving rendering at fixed content controls
 - downstream derive-macro use, including generics and malformed attributes
 
 The testkit SHOULD expose reusable assertions and fake runtimes for consumers.

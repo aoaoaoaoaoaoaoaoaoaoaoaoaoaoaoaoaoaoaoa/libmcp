@@ -67,10 +67,10 @@ Nontrivial tools should default to `render=porcelain`.
 Treat rendering as an exclusive choice: porcelain omits `structuredContent`,
 and JSON is not duplicated into text content.
 
-`render` and detail are separate axes.
-
-- `render=porcelain|json`
-- `detail=concise|full`
+`render=porcelain|json` selects representation. Detail/view controls select content.
+For fixed content controls, both formats must preserve the same information.
+Tools may use conventional `detail=concise|full`, specialized modes, or several
+content axes; no universal detail shape is required.
 
 Porcelain should be:
 
@@ -80,10 +80,11 @@ Porcelain should be:
 - summary-first
 - shape-aware
 
-Structured `render=json` should remain available.
+Structured JSON remains available for genuine structured consumers, not for the
+model to recover facts missing from porcelain. Missing-information paths are bugs.
 
 `json + concise` should be a structured summary, not merely the full payload in
-different clothes.
+different clothes; its information must match `porcelain + concise`.
 
 Use library projection traits, derive macros, and rendering helpers where
 possible. Do not default to pretty-printed JSON dumps and call that porcelain.

@@ -53,8 +53,12 @@ Default pattern:
 - porcelain output should avoid JSON unless the underlying data is irreducibly
   tree-shaped; tabular data should render as compact text tables with a header
   row, `|` separators, and unquoted scalar cells
-- `render` and `detail` stay separate
-- structured JSON remains available for exact consumers
+- `render` changes representation only; fixed content controls expose the same
+  information in porcelain and JSON
+- detail/view controls may be tool-specific and multidimensional; shared
+  concise/full levels are a convention, not a mandatory taxonomy
+- JSON is for genuine structured consumers, never the model's fuller-information
+  reading mode; JSON-only information is a tool defect
 
 ## Retrofit
 
@@ -75,8 +79,7 @@ Retrofitting order:
   flatter representation is honest
 - prefer `libmcp` projection traits, derive macros, and generic porcelain
   fallback before inventing consumer-local presentation glue
-- make `render` and `detail=concise|full` real before adding extra verbosity
-  knobs
+- separate rendering from the tool's content controls before adding verbosity knobs
 - establish a minimum risk-adequate rollout, telemetry, and recovery basis
   before claiming stability
 
