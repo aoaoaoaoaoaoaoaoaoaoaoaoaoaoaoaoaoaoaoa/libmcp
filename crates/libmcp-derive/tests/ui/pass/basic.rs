@@ -1,9 +1,9 @@
 //! A downstream projection needs no direct serde or serde_json dependency.
 
-use libmcp::{StructuredProjection as _, ToolProjection};
+use libmcp::{DetailLevel, StructuredProjection as _, ToolProjection};
 
 #[derive(ToolProjection)]
-#[libmcp(kind = "list")]
+#[libmcp(kind = "read", porcelain = encode)]
 struct Output {
     slug: String,
     r#type: String,
@@ -11,6 +11,10 @@ struct Output {
     summary: Option<String>,
     #[libmcp(full_only)]
     body: String,
+}
+
+fn encode(selected: &libmcp::__macro::serde_json::Value) -> String {
+    libmcp::render_json_porcelain(selected)
 }
 
 fn main() {
@@ -24,4 +28,6 @@ fn main() {
     assert_eq!(concise["slug"], "needle");
     assert_eq!(concise["type"], "result");
     assert!(concise.get("body").is_none());
+    assert!(!output.porcelain_projection(DetailLevel::Concise).expect("porcelain").contains("full only"));
+    assert!(output.porcelain_projection(DetailLevel::Full).expect("porcelain").contains("full only"));
 }

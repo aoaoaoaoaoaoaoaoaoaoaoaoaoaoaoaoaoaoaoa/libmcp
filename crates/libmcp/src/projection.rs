@@ -1,33 +1,12 @@
 //! Model-facing projection traits.
 
-use crate::render::{DetailLevel, JsonPorcelainConfig, render_json_porcelain};
+use crate::render::{DetailLevel, render_json_porcelain};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-
-const OVERVIEW_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig::fixed(10, 144),
-    full: JsonPorcelainConfig::fixed(28, 240),
-};
-const LIST_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig::fixed(16, 128),
-    full: JsonPorcelainConfig::fixed(32, 176),
-};
-const READ_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig::fixed(18, 176),
-    full: JsonPorcelainConfig::fixed(40, 320),
-};
-const MUTATION_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig::fixed(12, 160),
-    full: JsonPorcelainConfig::fixed(24, 256),
-};
-const OPS_BOUNDS: SurfacePorcelainBounds = SurfacePorcelainBounds {
-    concise: JsonPorcelainConfig::fixed(8, 160),
-    full: JsonPorcelainConfig::fixed(24, 240),
-};
 
 /// Projection failure.
 #[derive(Debug, Error)]
@@ -61,26 +40,6 @@ pub enum SurfaceKind {
     Ops,
 }
 
-/// Detail-indexed porcelain bounds for one surface kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfacePorcelainBounds {
-    /// Concise porcelain bounds.
-    pub concise: JsonPorcelainConfig,
-    /// Full porcelain bounds.
-    pub full: JsonPorcelainConfig,
-}
-
-impl SurfacePorcelainBounds {
-    /// Selects bounds for a detail level.
-    #[must_use]
-    pub const fn for_detail(self, detail: DetailLevel) -> JsonPorcelainConfig {
-        match detail {
-            DetailLevel::Concise => self.concise,
-            DetailLevel::Full => self.full,
-        }
-    }
-}
-
 /// Projection policy derived from the surface kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProjectionPolicy {
@@ -90,26 +49,16 @@ pub struct ProjectionPolicy {
     pub forbid_opaque_ids: bool,
     /// Whether the surface is reference-only and must not inline bodies.
     pub reference_only: bool,
-    /// Detail-indexed porcelain bounds.
-    pub porcelain: SurfacePorcelainBounds,
 }
 
 impl ProjectionPolicy {
     /// Builds a policy from the type-level doctrine.
     #[must_use]
     pub fn from_surface(kind: SurfaceKind, forbid_opaque_ids: bool, reference_only: bool) -> Self {
-        let porcelain = match kind {
-            SurfaceKind::Overview => OVERVIEW_BOUNDS,
-            SurfaceKind::List => LIST_BOUNDS,
-            SurfaceKind::Read => READ_BOUNDS,
-            SurfaceKind::Mutation => MUTATION_BOUNDS,
-            SurfaceKind::Ops => OPS_BOUNDS,
-        };
         Self {
             kind,
             forbid_opaque_ids,
             reference_only,
-            porcelain,
         }
     }
 }
@@ -205,14 +154,15 @@ pub trait ToolProjection: StructuredProjection + SurfacePolicy {
 
     /// Renders porcelain for the chosen detail level.
     fn porcelain_projection(&self, detail: DetailLevel) -> Result<String, ProjectionError> {
-        let policy = self.projection_policy();
         let value = self.structured_projection(detail)?;
-        let config = policy.porcelain.for_detail(detail);
-        Ok(render_json_porcelain(&value, config))
+        Ok(Self::render_porcelain(&value))
+    }
+
+    /// Encodes selected content without changing it. Override for domain layout.
+    fn render_porcelain(selected: &Value) -> String {
+        render_json_porcelain(selected)
     }
 }
-
-impl<T> ToolProjection for T where T: StructuredProjection + SurfacePolicy {}
 
 fn validate_projection_policy(
     value: &Value,
@@ -332,6 +282,8 @@ impl SurfacePolicy for FallbackJsonProjection {
     }
 }
 
+impl ToolProjection for FallbackJsonProjection {}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -406,7 +358,7 @@ mod tests {
             Ok(value) => value,
             Err(_) => return,
         };
-        assert!(porcelain.contains("slug: \"matched-lp-site-traces\""));
+        assert!(porcelain.contains("slug: matched-lp-site-traces"));
     }
 
     #[test]

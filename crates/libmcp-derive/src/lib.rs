@@ -5,7 +5,7 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{format_ident, quote};
 use std::collections::BTreeSet;
 use syn::{
-    Data, DeriveInput, Field, Fields, Ident, LitStr, Result, Type, ext::IdentExt,
+    Data, DeriveInput, Field, Fields, Ident, LitStr, Path, Result, Type, ext::IdentExt,
     meta::ParseNestedMeta, parse_macro_input, parse_quote,
 };
 
@@ -16,6 +16,7 @@ const LIBMCP_ATTR: &str = "libmcp";
 const ATTR_KIND: &str = "kind";
 const ATTR_REFERENCE_ONLY: &str = "reference_only";
 const ATTR_ALLOW_OPAQUE_IDS: &str = "allow_opaque_ids";
+const ATTR_PORCELAIN: &str = "porcelain";
 const FIELD_SELECTOR: &str = "selector";
 const FIELD_TITLE: &str = "title";
 const FIELD_SLUG: &str = "slug";
@@ -25,7 +26,7 @@ const FIELD_FULL_ONLY: &str = "full_only";
 const FIELD_FULL: &str = "full";
 const FIELD_CONCISE_ONLY: &str = "concise_only";
 
-/// Derives `libmcp::StructuredProjection` and `libmcp::SurfacePolicy`.
+/// Derives projection and policy traits; `porcelain = path` selects a custom encoder.
 #[proc_macro_derive(ToolProjection, attributes(libmcp))]
 pub fn derive_tool_projection(input: TokenStream) -> TokenStream {
     expand_tool_projection(parse_macro_input!(input as DeriveInput))
@@ -80,6 +81,11 @@ fn expand_tool_projection(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let kind = container.kind.tokens(&libmcp);
     let reference_only = container.reference_only;
     let forbid_opaque_ids = !container.allow_opaque_ids;
+    let porcelain = container.porcelain.map(|path| quote! {
+        fn render_porcelain(selected: &#libmcp::__macro::serde_json::Value) -> ::std::string::String {
+            #path(selected)
+        }
+    });
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     Ok(quote! {
@@ -115,6 +121,10 @@ fn expand_tool_projection(input: DeriveInput) -> Result<proc_macro2::TokenStream
                     #reference_only,
                 )
             }
+        }
+
+        impl #impl_generics #libmcp::ToolProjection for #ident #ty_generics #where_clause {
+            #porcelain
         }
     })
 }
@@ -274,6 +284,7 @@ struct ContainerAttrs {
     kind_seen: bool,
     reference_only: bool,
     allow_opaque_ids: bool,
+    porcelain: Option<Path>,
 }
 
 fn parse_container_attrs(attrs: &[syn::Attribute]) -> Result<ContainerAttrs> {
@@ -283,6 +294,13 @@ fn parse_container_attrs(attrs: &[syn::Attribute]) -> Result<ContainerAttrs> {
         .filter(|attr| attr.path().is_ident(LIBMCP_ATTR))
     {
         attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident(ATTR_PORCELAIN) {
+                if parsed.porcelain.is_some() {
+                    return Err(meta.error("duplicate libmcp porcelain encoder"));
+                }
+                parsed.porcelain = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
             if meta.path.is_ident(ATTR_KIND) {
                 if parsed.kind_seen {
                     return Err(meta.error("duplicate libmcp kind"));

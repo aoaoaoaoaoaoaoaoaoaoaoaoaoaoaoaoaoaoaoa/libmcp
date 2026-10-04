@@ -58,7 +58,7 @@ The presentation plane owns shared vocabulary and mechanisms for:
 
 - render and detail selection
 - explicit model-facing projections
-- deterministic bounded porcelain rendering
+- deterministic complete porcelain rendering of bounded, tool-selected content
 - safe input normalization
 - projection doctrine tests
 
@@ -366,9 +366,11 @@ fallbacks belong at a client-specific transport adapter, never in the default
 model-facing result. Otherwise every projection consumes context twice and
 `render` ceases to select anything.
 
-Library render helpers that declare bounds MUST enforce them deterministically
-and MUST mark truncation explicitly. They MUST escape or otherwise delimit
-scalar text unambiguously.
+Rendering MUST NOT truncate selected strings, collections, fields or nesting.
+Tools MUST apply content bounds before rendering, identify omissions and offer
+explicit selection or continuation to the remaining information. Full detail
+does not disable pagination. Encoders MUST delimit scalar values unambiguously
+and preserve significant whitespace.
 
 Projection policy declared as enforced MUST be checked before model-facing
 output is returned. A policy flag that only documents an aspiration MUST NOT be
@@ -412,8 +414,8 @@ Porcelain SHOULD be:
 
 - line-oriented
 - deterministic
-- bounded
-- summary-first
+- complete for the selected content
+- compact through grouping and layout
 - suitable for long-running agent loops
 
 The intended happy path is:
@@ -425,6 +427,20 @@ The intended happy path is:
 Generic JSON projection is an explicit escape hatch. Tabular results SHOULD use
 a compact header row, `|` separators, and unquoted ordinary scalar cells rather
 than JSON-shaped text.
+
+Compact defaults are tool-owned content decisions. A consumer MUST establish
+appropriate row, field, body, history and metadata selection before adopting a
+lossless fallback; removing renderer clipping is not permission for default
+unbounded responses. `with_render_property` adds no detail axis;
+`with_presentation_properties` adds concise/full only when the tool has not
+declared its own detail control.
+
+`render_json_porcelain` accepts already-selected content and has no truncation
+configuration. It uses complete indented records, literal multiline text and
+compact tables for short homogeneous scalar records. `ToolProjection` derives
+the default encoder; `#[libmcp(porcelain = path)]` substitutes an encoder receiving
+only the selected value. Handwritten implementations can override that method.
+The encoder contract forbids selecting different content.
 
 Operational failures SHOULD expose a concise message, typed category, and retry
 hint when retry is plausible. Raw backend diagnostics SHOULD remain out of the

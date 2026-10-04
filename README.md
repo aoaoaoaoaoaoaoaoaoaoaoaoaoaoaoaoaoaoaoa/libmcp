@@ -21,13 +21,20 @@ operational doctrine, but it is not part of the runtime crate API.
 
 ## Status
 
-`libmcp` `2.2` has its normative contract in [docs/spec.md](docs/spec.md); the abstract
+`libmcp` has its normative contract in [docs/spec.md](docs/spec.md); the abstract
 machine and proof sketches are in `formal_semantics.md`. The workspace contains
 `libmcp`, `libmcp-derive`, and `libmcp-testkit`.
 
 The [presentation contract](docs/spec.md#presentation-guarantees) separates
 rendering from content selection: changing render must not reveal new information.
 Tools choose their own detail modes or content axes; compact porcelain is the default.
+
+Version 3 removes render-time preview bounds. `render_json_porcelain` takes only
+the selected value; content limits and continuation belong to tools. Consumers
+must make default selections appropriately small before upgrading.
+`ToolProjection` is now explicitly implemented (or derived), permitting custom
+encoders through `#[libmcp(porcelain = path)]`. See the
+[model output contract](docs/spec.md#model-ux-doctrine) for rendering and schema helpers.
 
 The continuity spine distinguishes public sessions, host epochs, worker
 generations, execution knowledge, and per-invocation replay contracts. Process

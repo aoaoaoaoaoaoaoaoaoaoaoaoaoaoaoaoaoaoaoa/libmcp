@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
-const MAX_PREVIEW_DEPTH: usize = 4;
-
 /// Output render mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
@@ -133,9 +131,23 @@ pub fn render_path(path: &Path, style: PathStyle, workspace_root: Option<&Path>)
     }
 }
 
-/// Injects the common presentation controls into an object input schema.
+/// Adds the conventional concise/full control without replacing tool-owned controls.
 #[must_use]
 pub fn with_presentation_properties(schema: Value) -> Value {
+    with_control(
+        with_render_property(schema),
+        "detail",
+        detail_property_schema(),
+    )
+}
+
+/// Adds only rendering; content controls remain tool-owned.
+#[must_use]
+pub fn with_render_property(schema: Value) -> Value {
+    with_control(schema, "render", render_property_schema())
+}
+
+fn with_control(schema: Value, name: &str, control: Value) -> Value {
     let Value::Object(mut object) = schema else {
         return schema;
     };
@@ -143,8 +155,7 @@ pub fn with_presentation_properties(schema: Value) -> Value {
         .entry("properties".to_owned())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if let Value::Object(properties) = properties {
-        let _ = properties.insert("render".to_owned(), render_property_schema());
-        let _ = properties.insert("detail".to_owned(), detail_property_schema());
+        let _ = properties.entry(name.to_owned()).or_insert(control);
     }
     let _ = object
         .entry("additionalProperties".to_owned())
@@ -156,7 +167,8 @@ fn render_property_schema() -> Value {
     serde_json::json!({
         "type": "string",
         "enum": ["porcelain", "json"],
-        "description": "Output rendering. Defaults to porcelain for model-friendly summaries."
+        "default": "porcelain",
+        "description": "Encoding only; defaults to porcelain."
     })
 }
 
@@ -164,239 +176,158 @@ fn detail_property_schema() -> Value {
     serde_json::json!({
         "type": "string",
         "enum": ["concise", "full"],
-        "description": "Output detail level. Concise is the default model-facing summary; full retains more structure."
+        "default": "concise",
+        "description": "Selected content: concise (default) or full. Independent of render."
     })
 }
 
-/// Generic JSON-to-porcelain rendering configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct JsonPorcelainConfig {
-    max_lines: usize,
-    max_inline_chars: usize,
-}
-
-impl JsonPorcelainConfig {
-    /// Constructs non-zero porcelain bounds.
-    pub fn try_new(
-        max_lines: usize,
-        max_inline_chars: usize,
-    ) -> Result<Self, crate::InvariantViolation> {
-        if max_lines == 0 || max_inline_chars < 3 {
-            return Err(crate::InvariantViolation::new(
-                "porcelain bounds require lines and three marker characters",
-            ));
-        }
-        Ok(Self {
-            max_lines,
-            max_inline_chars,
-        })
-    }
-
-    pub(crate) const fn fixed(max_lines: usize, max_inline_chars: usize) -> Self {
-        Self {
-            max_lines,
-            max_inline_chars,
-        }
-    }
-
-    /// Returns the maximum output line count.
-    #[must_use]
-    pub const fn max_lines(self) -> usize {
-        self.max_lines
-    }
-
-    /// Returns the maximum scalar count in an inline fragment.
-    #[must_use]
-    pub const fn max_inline_chars(self) -> usize {
-        self.max_inline_chars
-    }
-}
-
-impl Default for JsonPorcelainConfig {
-    fn default() -> Self {
-        Self {
-            max_lines: 24,
-            max_inline_chars: 120,
-        }
-    }
-}
-
-/// Renders arbitrary JSON into bounded, deterministic porcelain text.
+/// Encodes the complete selected value as text. Bounds belong to content selection.
+///
+/// Short homogeneous records use tables; other collections use indentation.
+/// Ambiguous scalars are quoted, and multiline text uses literal blocks.
 #[must_use]
-pub fn render_json_porcelain(value: &Value, config: JsonPorcelainConfig) -> String {
-    let total_lines = top_level_line_count(value);
-    let mut lines = Vec::<String>::with_capacity(total_lines.min(config.max_lines));
-    render_top_level(value, config, &mut lines);
-    if total_lines > config.max_lines {
-        let omitted = total_lines - config.max_lines + 1;
-        if let Some(last) = lines.last_mut() {
-            *last = format!("… {omitted} line(s) omitted");
-        }
-    }
+pub fn render_json_porcelain(value: &Value) -> String {
+    let mut lines = Vec::new();
+    render_value(value, 0, "", &mut lines);
+    // Literal blocks need their final line ending to preserve trailing newlines.
+    lines.push(String::new());
     lines.join("\n")
 }
 
-fn top_level_line_count(value: &Value) -> usize {
+fn render_value(value: &Value, depth: usize, label: &str, lines: &mut Vec<String>) {
+    let indent = "  ".repeat(depth);
+    let prefix = format!("{indent}{label}");
     match value {
-        Value::Object(object) => object.len().max(1),
-        Value::Array(items) => items.len().saturating_add(1),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => 1,
-    }
-}
-
-fn render_top_level(value: &Value, config: JsonPorcelainConfig, lines: &mut Vec<String>) {
-    match value {
-        Value::Object(object) => {
-            if object.is_empty() {
-                lines.push("empty object".to_owned());
-                return;
+        Value::Object(fields) if !fields.is_empty() => {
+            let child_depth = if label.is_empty() {
+                depth
+            } else {
+                lines.push(prefix.trim_end().to_owned());
+                depth + 1
+            };
+            for (key, value) in fields {
+                render_value(
+                    value,
+                    child_depth,
+                    &format!("{}: ", render_string(key)),
+                    lines,
+                );
             }
-            for key in object.keys().take(config.max_lines) {
-                let preview = inline_preview(&object[key], config);
+        }
+        Value::Array(items) if !items.is_empty() => {
+            if let Some(keys) = table_keys(items) {
                 lines.push(format!(
-                    "{}: {preview}",
-                    render_key(key, config.max_inline_chars)
+                    "{prefix}table[{}]: {}",
+                    items.len(),
+                    keys.iter()
+                        .map(|key| render_string(key))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
                 ));
+                for item in items {
+                    lines.push(format!(
+                        "{indent}  {}",
+                        keys.iter()
+                            .map(|key| render_scalar(&item[*key]))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ));
+                }
+            } else {
+                let child_depth = if label.is_empty() {
+                    depth
+                } else {
+                    lines.push(prefix.trim_end().to_owned());
+                    depth + 1
+                };
+                for item in items {
+                    render_value(item, child_depth, "- ", lines);
+                }
             }
         }
-        Value::Array(items) => {
-            lines.push(format!("{} item(s)", items.len()));
-            for (index, item) in items
-                .iter()
-                .take(config.max_lines.saturating_sub(1))
-                .enumerate()
-            {
-                let preview = inline_preview(item, config);
-                lines.push(format!("[{}] {preview}", index + 1));
+        Value::String(text)
+            if text.contains('\n')
+                && !text.chars().any(|c| {
+                    (c.is_control() && c != '\n' && c != '\t')
+                        || matches!(c, '\u{2028}' | '\u{2029}')
+                }) =>
+        {
+            let chomping = if text.ends_with("\n\n") || text == "\n" {
+                "+"
+            } else if text.ends_with('\n') {
+                ""
+            } else {
+                "-"
+            };
+            lines.push(format!("{prefix}|2{chomping}"));
+            for line in text.split_terminator('\n') {
+                lines.push(format!("{indent}  {line}"));
             }
         }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-            lines.push(inline_preview(value, config));
-        }
+        _ => lines.push(format!("{prefix}{}", render_scalar(value))),
     }
 }
 
-fn inline_preview(value: &Value, config: JsonPorcelainConfig) -> String {
-    inline_preview_at(value, config, 0)
-}
-
-fn inline_preview_at(value: &Value, config: JsonPorcelainConfig, depth: usize) -> String {
-    let raw = match value {
-        Value::Null => "null".to_owned(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => number.to_string(),
-        Value::String(text) => quote_string_bounded(text, config.max_inline_chars),
-        Value::Array(items) if depth >= MAX_PREVIEW_DEPTH && !items.is_empty() => "[…]".to_owned(),
-        Value::Object(object) if depth >= MAX_PREVIEW_DEPTH && !object.is_empty() => {
-            "{…}".to_owned()
-        }
-        Value::Array(items) => preview_array(items, config, depth),
-        Value::Object(object) => preview_object(object, config, depth),
-    };
-    truncate_fragment(raw.as_str(), config.max_inline_chars)
-}
-
-fn preview_array(items: &[Value], config: JsonPorcelainConfig, depth: usize) -> String {
-    if items.is_empty() {
-        return "[]".to_owned();
+fn table_keys(items: &[Value]) -> Option<Vec<&str>> {
+    let first = items.first()?.as_object()?;
+    // These thresholds choose layout, never content. Wide or nested rows fall
+    // back to complete records rather than clipping cells or columns.
+    if items.len() < 2 || first.is_empty() || first.len() > 12 {
+        return None;
     }
-    let mut parts = items
+    items
         .iter()
-        .take(3)
-        .map(|item| inline_preview_at(item, config, depth + 1))
-        .collect::<Vec<_>>();
-    if items.len() > 3 {
-        parts.push(format!("+{} more", items.len() - 3));
-    }
-    format!("[{}]", parts.join(", "))
-}
-
-fn preview_object(
-    object: &serde_json::Map<String, Value>,
-    config: JsonPorcelainConfig,
-    depth: usize,
-) -> String {
-    if object.is_empty() {
-        return "{}".to_owned();
-    }
-    let mut parts = object
-        .keys()
-        .take(4)
-        .map(|key| {
-            format!(
-                "{}={}",
-                render_key(key, config.max_inline_chars),
-                inline_preview_at(&object[key], config, depth + 1)
-            )
+        .all(|item| {
+            item.as_object().is_some_and(|row| {
+                row.keys().eq(first.keys())
+                    && row.values().all(|value| {
+                        !value.is_array()
+                            && !value.is_object()
+                            && render_scalar(value).chars().count() <= 96
+                    })
+            })
         })
-        .collect::<Vec<_>>();
-    if object.len() > 4 {
-        parts.push(format!("+{} more", object.len() - 4));
-    }
-    format!("{{{}}}", parts.join(", "))
+        .then(|| first.keys().map(String::as_str).collect())
 }
 
-fn quote_string(text: &str) -> String {
-    serde_json::to_string(text).unwrap_or_else(|_| "\"<invalid string>\"".to_owned())
+fn render_scalar(value: &Value) -> String {
+    match value {
+        Value::String(text) => render_string(text),
+        _ => value.to_string(),
+    }
 }
 
-fn quote_string_bounded(text: &str, limit: usize) -> String {
-    let mut characters = text.chars();
-    let mut prefix = characters.by_ref().take(limit).collect::<Vec<_>>();
-    let complete = characters.next().is_none();
-    if complete {
-        let quoted = quote_string(&prefix.iter().collect::<String>());
-        if quoted.chars().count() <= limit {
-            return quoted;
-        }
-    }
-
-    while !prefix.is_empty() {
-        let _removed = prefix.pop();
-        let mut marked = prefix.iter().collect::<String>();
-        marked.push('…');
-        let quoted = quote_string(&marked);
-        if quoted.chars().count() <= limit {
-            return quoted;
-        }
-    }
-    "\"…\"".to_owned()
-}
-
-fn render_key(key: &str, limit: usize) -> String {
-    if !key.is_empty()
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/'))
-    {
-        truncate_fragment(key, limit)
+fn render_string(text: &str) -> String {
+    let plain = text
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && text.trim() == text
+        && !text
+            .chars()
+            .any(|c| c.is_control() || ":[]{}|\"'\\#\u{2028}\u{2029}".contains(c))
+        && !matches!(
+            text.to_ascii_lowercase().as_str(),
+            "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "y" | "n"
+        );
+    if plain {
+        text.to_owned()
     } else {
-        quote_string_bounded(key, limit)
+        // JSON permits these raw characters, but text readers may interpret
+        // them as line breaks and fold away their identity.
+        Value::String(text.to_owned())
+            .to_string()
+            .replace('\u{0085}', "\\u0085")
+            .replace('\u{2028}', "\\u2028")
+            .replace('\u{2029}', "\\u2029")
     }
-}
-
-fn truncate_fragment(raw: &str, limit: usize) -> String {
-    let mut chars = raw.chars();
-    let prefix = chars.by_ref().take(limit).collect::<String>();
-    if chars.next().is_none() {
-        return prefix;
-    }
-    match (raw.chars().next(), raw.chars().next_back()) {
-        (Some('{'), Some('}')) => return "{…}".to_owned(),
-        (Some('['), Some(']')) => return "[…]".to_owned(),
-        _ => {}
-    }
-    let mut marked = prefix.chars().take(limit - 1).collect::<String>();
-    marked.push('…');
-    marked
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode,
-        collapse_inline_whitespace, render_json_porcelain, render_path,
-        with_presentation_properties,
+        DetailLevel, PathStyle, RenderConfig, RenderMode, collapse_inline_whitespace,
+        render_json_porcelain, render_path, with_presentation_properties, with_render_property,
     };
     use serde_json::json;
     use std::path::Path;
@@ -424,25 +355,28 @@ mod tests {
     }
 
     #[test]
-    fn renders_objects_and_arrays_to_bounded_porcelain() {
+    fn renders_complete_records_and_unambiguous_table_cells() {
         let object = json!({
             "beta": {"nested": true, "count": 2},
             "alpha": "hello   world",
         });
-        let rendered = render_json_porcelain(&object, JsonPorcelainConfig::default());
+        let rendered = render_json_porcelain(&object);
         assert_eq!(
             rendered,
-            "alpha: \"hello   world\"\nbeta: {count=2, nested=true}"
+            "alpha: hello   world\nbeta:\n  count: 2\n  nested: true\n"
         );
 
         let array = json!([
             {"id": 1, "title": "first"},
-            {"id": 2, "title": "second"},
+            {"id": 2, "title": "true"},
+            {"id": 3, "title": "x | y"},
+            {"id": 4, "title": null},
+            {"id": 5, "title": "null"},
         ]);
-        let rendered = render_json_porcelain(&array, JsonPorcelainConfig::default());
+        let rendered = render_json_porcelain(&array);
         assert_eq!(
             rendered,
-            "2 item(s)\n[1] {id=1, title=\"first\"}\n[2] {id=2, title=\"second\"}"
+            "table[5]: id | title\n  1 | first\n  2 | \"true\"\n  3 | \"x | y\"\n  4 | null\n  5 | \"null\"\n"
         );
     }
 
@@ -463,38 +397,50 @@ mod tests {
             json!(["concise", "full"])
         );
         assert_eq!(schema["additionalProperties"], json!(false));
+        let custom = json!({"type":"object","properties":{"detail":{"enum":["headers","body"]}}});
+        assert_eq!(
+            with_presentation_properties(custom.clone())["properties"]["detail"],
+            custom["properties"]["detail"]
+        );
+        let render_only = with_render_property(json!({"type":"object"}));
+        assert!(render_only["properties"].get("detail").is_none());
     }
 
     #[test]
-    fn porcelain_bounds_mark_omissions_and_preserve_string_delimiters() {
-        assert!(JsonPorcelainConfig::try_new(0, 8).is_err());
-        assert!(JsonPorcelainConfig::try_new(2, 2).is_err());
-        let config = match JsonPorcelainConfig::try_new(2, 8) {
-            Ok(config) => config,
-            Err(_) => return,
-        };
-        let rendered = render_json_porcelain(
-            &json!({
-                "alpha": "first",
-                "beta": "second",
-                "gamma": "third"
-            }),
-            config,
-        );
-        let lines = rendered.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[1], "… 2 line(s) omitted");
-
-        let scalar = render_json_porcelain(&json!("a\"b\ncdefghijkl"), config);
-        assert!(scalar.chars().count() <= config.max_inline_chars());
-        assert!(scalar.contains('…'));
-        assert!(serde_json::from_str::<String>(&scalar).is_ok());
-
-        let mut nested = json!("leaf");
+    fn preserves_selected_text_and_deep_collections() {
+        // Format-owned limits used to hide long strings and nested values even
+        // at full detail. Selection alone may omit facts, not either encoder.
+        let text = format!("{}leaf", "λ".repeat(2048));
+        let mut nested =
+            json!([0,1,2,3,{"fifth":text.clone(),"empty":{},"list":[],"null":null,"last":"tail"}]);
         for _depth in 0..32 {
             nested = json!({"next": nested});
         }
-        let nested = render_json_porcelain(&nested, JsonPorcelainConfig::default());
-        assert!(nested.contains("{…}"));
+        let nested = render_json_porcelain(&nested);
+        assert!(nested.contains(&text));
+        assert!(nested.contains("last: tail"));
+        assert!(nested.contains("empty: {}"));
+        assert!(nested.contains("list: []"));
+        assert!(nested.contains("\"null\": null"));
+        assert_eq!(
+            render_json_porcelain(&json!("a  b\n  c")),
+            "|2-\n  a  b\n    c\n"
+        );
+        assert_eq!(render_json_porcelain(&json!("a\n\n")), "|2+\n  a\n  \n");
+        assert_eq!(render_json_porcelain(&json!("\n")), "|2+\n  \n");
+        for text in ["x\u{0085}y", "x\u{2028}y", "x\u{2029}y"] {
+            let encoded = render_json_porcelain(&json!(text));
+            assert_eq!(
+                serde_json::from_str::<String>(&encoded).ok().as_deref(),
+                Some(text)
+            );
+            assert!(encoded.contains("\\u"));
+        }
+        for text in ["", "false", "null", "123", " x ", "x|y", "\r\n"] {
+            assert_eq!(
+                render_json_porcelain(&json!(text)).trim_end(),
+                json!(text).to_string()
+            );
+        }
     }
 }

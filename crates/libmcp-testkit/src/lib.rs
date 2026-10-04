@@ -188,7 +188,7 @@ impl std::fmt::Display for ProjectionAssertion {
 
 impl std::error::Error for ProjectionAssertion {}
 
-/// Asserts that a projection obeys the doctrine implied by its surface policy.
+/// Checks structural policy for both content projections, not render parity or wire exclusivity.
 pub fn assert_projection_doctrine<T>(projection: &T) -> Result<(), ProjectionAssertion>
 where
     T: ToolProjection,

@@ -2,9 +2,9 @@
 
 use libmcp::{
     DispatchQueueOutcome, ExecutionKnowledge, FrameParseError, FramedMessage, HostRejection,
-    HostSessionKernel, HostSessionKernelSnapshot, JsonPorcelainConfig, ProbeResolution,
-    ReplayAllowance, ReplayBudget, ReplayContract, RequestDisposition, RequestId, SessionPhase,
-    SnapshotError, SnapshotLimits, request_disposition,
+    HostSessionKernel, HostSessionKernelSnapshot, ProbeResolution, ReplayAllowance, ReplayBudget,
+    ReplayContract, RequestDisposition, RequestId, SessionPhase, SnapshotError, SnapshotLimits,
+    request_disposition,
 };
 use libmcp_testkit::ChurnHarness;
 use serde as _;
@@ -234,7 +234,7 @@ fn downstream_public_initialization_never_invents_client_events() -> Result<(), 
 }
 
 #[test]
-fn downstream_decision_and_render_laws_are_total_and_visible() -> Result<(), Box<dyn Error>> {
+fn downstream_replay_decisions_preserve_execution_uncertainty() {
     let available = ReplayAllowance::new(0, 1);
     assert_eq!(
         request_disposition(
@@ -263,18 +263,6 @@ fn downstream_decision_and_render_laws_are_total_and_visible() -> Result<(), Box
         ),
         RequestDisposition::RejectAmbiguousOutcome
     );
-
-    let config = JsonPorcelainConfig::try_new(2, 8)?;
-    let rendered = libmcp::render_json_porcelain(
-        &json!({"alpha": "one", "beta": "two", "gamma": "three"}),
-        config,
-    );
-    assert_eq!(rendered.lines().count(), 2);
-    assert!(rendered.contains("omitted"));
-    let scalar = libmcp::render_json_porcelain(&json!("quote\" newline\n tail"), config);
-    assert!(scalar.contains('…'));
-    assert!(serde_json::from_str::<String>(&scalar).is_ok());
-    Ok(())
 }
 
 fn request(id: u64, name: &str) -> Result<FramedMessage, Box<dyn Error>> {

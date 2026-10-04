@@ -51,12 +51,11 @@ pub use normalize::{
 };
 pub use projection::{
     FallbackJsonProjection, ProjectionError, ProjectionPolicy, SelectorProjection, SelectorRef,
-    StructuredProjection, SurfaceKind, SurfacePolicy, SurfacePorcelainBounds, TimestampText,
-    ToolProjection,
+    StructuredProjection, SurfaceKind, SurfacePolicy, TimestampText, ToolProjection,
 };
 pub use render::{
-    DetailLevel, JsonPorcelainConfig, PathStyle, RenderConfig, RenderMode, TruncatedText,
-    collapse_inline_whitespace, render_json_porcelain, with_presentation_properties,
+    DetailLevel, PathStyle, RenderConfig, RenderMode, TruncatedText, collapse_inline_whitespace,
+    render_json_porcelain, with_presentation_properties, with_render_property,
 };
 pub use replay::{
     ExecutionKnowledge, ExecutionTransitionError, ProbeResolution, ReplayAllowance, ReplayContract,
