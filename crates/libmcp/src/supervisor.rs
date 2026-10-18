@@ -72,7 +72,6 @@ impl SupervisorConfig {
     }
 
     /// Replaces the default eight-mebibyte frame bound.
-    #[must_use]
     pub const fn with_frame_limit(mut self, frame_limit: FrameLimit) -> Self {
         self.frame_limit = frame_limit;
         self

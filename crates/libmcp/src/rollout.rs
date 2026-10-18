@@ -64,7 +64,6 @@ impl ReleaseId {
     }
 
     /// Returns the digest text.
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -127,7 +126,6 @@ impl StateCompatibility {
     }
 
     /// Returns whether this release can follow `incumbent` without a destructive migration.
-    #[must_use]
     pub fn accepts(&self, incumbent: &Self) -> bool {
         match (self, incumbent) {
             (Self::Stateless, Self::Stateless) => true,
@@ -188,31 +186,26 @@ impl ReleaseProvenance {
     }
 
     /// Returns the source repository.
-    #[must_use]
     pub fn repository(&self) -> &Path {
         &self.repository
     }
 
     /// Returns the exact source commit.
-    #[must_use]
     pub fn commit(&self) -> &str {
         &self.commit
     }
 
     /// Returns the Cargo lockfile digest.
-    #[must_use]
     pub const fn cargo_lock_sha256(&self) -> &ReleaseId {
         &self.cargo_lock_sha256
     }
 
     /// Returns the compiler identity.
-    #[must_use]
     pub fn rustc(&self) -> &str {
         &self.rustc
     }
 
     /// Returns the build timestamp.
-    #[must_use]
     pub fn built_at(&self) -> &str {
         &self.built_at
     }
@@ -257,43 +250,36 @@ impl ReleaseManifest {
     }
 
     /// Returns the server name.
-    #[must_use]
     pub fn server(&self) -> &str {
         &self.server
     }
 
     /// Returns the executable digest and generation identity.
-    #[must_use]
     pub const fn generation(&self) -> &ReleaseId {
         &self.generation
     }
 
     /// Returns the exact executable digest.
-    #[must_use]
     pub const fn binary_sha256(&self) -> &ReleaseId {
         &self.binary_sha256
     }
 
     /// Returns the immutable executable path.
-    #[must_use]
     pub fn executable(&self) -> &Path {
         &self.executable
     }
 
     /// Returns the default server arguments used for a fresh launch.
-    #[must_use]
     pub fn arguments(&self) -> &[String] {
         &self.arguments
     }
 
     /// Returns the state compatibility contract.
-    #[must_use]
     pub const fn state(&self) -> &StateCompatibility {
         &self.state
     }
 
     /// Returns exact source and toolchain provenance.
-    #[must_use]
     pub const fn provenance(&self) -> &ReleaseProvenance {
         &self.provenance
     }
@@ -340,7 +326,6 @@ impl ReleasePointer {
     }
 
     /// Returns the selected immutable manifest path.
-    #[must_use]
     pub fn manifest(&self) -> &Path {
         &self.manifest
     }
@@ -372,13 +357,11 @@ pub enum ReleaseObservation {
 
 impl ReleaseObservation {
     /// Returns whether any successor work is pending.
-    #[must_use]
     pub const fn rollout_pending(self) -> bool {
         !matches!(self, Self::Incumbent)
     }
 
     /// Returns whether a successor can be handed the public session.
-    #[must_use]
     pub const fn rollout_ready(self) -> bool {
         matches!(self, Self::SuccessorReady)
     }
@@ -490,13 +473,11 @@ impl ReleaseRuntime {
     }
 
     /// Returns whether the executable is selected through a managed channel.
-    #[must_use]
     pub const fn is_managed(&self) -> bool {
         matches!(self.mode, ReleaseMode::Managed { .. })
     }
 
     /// Returns whether the launch path is durable rather than a Cargo target artifact.
-    #[must_use]
     pub fn launch_path_stable(&self) -> bool {
         match &self.mode {
             ReleaseMode::Managed { .. } => true,
@@ -505,7 +486,6 @@ impl ReleaseRuntime {
     }
 
     /// Returns the managed generation, if any.
-    #[must_use]
     pub const fn generation(&self) -> Option<&ReleaseId> {
         match &self.mode {
             ReleaseMode::Managed { incumbent, .. } => Some(incumbent),

@@ -30,19 +30,16 @@ pub enum RequestId {
 
 impl RequestId {
     /// Constructs a numeric request ID.
-    #[must_use]
     pub fn number(number: impl Into<Number>) -> Self {
         Self::Number(number.into())
     }
 
     /// Constructs a textual request ID.
-    #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text(text.into())
     }
 
     /// Parses a request ID from JSON.
-    #[must_use]
     pub fn from_json_value(value: &Value) -> Option<Self> {
         match value {
             Value::Number(number) => Some(Self::Number(number.clone())),
@@ -52,7 +49,6 @@ impl RequestId {
     }
 
     /// Converts the request ID back to JSON.
-    #[must_use]
     pub fn to_json_value(&self) -> Value {
         match self {
             Self::Number(number) => Value::Number(number.clone()),
@@ -86,31 +82,26 @@ impl RpcMethod {
     }
 
     /// Returns the MCP `tools/call` method token.
-    #[must_use]
     pub fn tools_call() -> Self {
         Self(Self::TOOLS_CALL.to_owned())
     }
 
     /// Parses a method token from JSON.
-    #[must_use]
     pub fn from_json_value(value: &Value) -> Option<Self> {
         value.as_str().and_then(|method| Self::try_new(method).ok())
     }
 
     /// Returns the method text.
-    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
     /// Returns whether this is the JSON-RPC initialize request.
-    #[must_use]
     pub fn is_initialize(&self) -> bool {
         self.as_str() == Self::INITIALIZE
     }
 
     /// Returns whether this is an initialized notification spelling.
-    #[must_use]
     pub fn is_initialized_notification(&self) -> bool {
         matches!(
             self.as_str(),
@@ -119,7 +110,6 @@ impl RpcMethod {
     }
 
     /// Returns whether this is an MCP tool-call request.
-    #[must_use]
     pub fn is_tools_call(&self) -> bool {
         self.as_str() == Self::TOOLS_CALL
     }
@@ -161,13 +151,11 @@ impl ToolName {
     }
 
     /// Returns the tool-name text.
-    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
     /// Returns whether the tool name denotes the common advanced-LSP proxy.
-    #[must_use]
     pub fn is_advanced_lsp_request(&self) -> bool {
         fold_ascii_token(self.as_str()) == Self::ADVANCED_LSP_REQUEST_NORMALIZED
     }
@@ -247,19 +235,16 @@ impl FramedMessage {
     }
 
     /// Returns the original payload bytes.
-    #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
 
     /// Returns the validated JSON value.
-    #[must_use]
     pub const fn value(&self) -> &Value {
         &self.value
     }
 
     /// Returns the validated envelope shape.
-    #[must_use]
     pub fn classify(&self) -> RpcEnvelopeKind {
         self.envelope.clone()
     }
@@ -513,7 +498,6 @@ where
 
     /// Returns whether bytes have left the kernel stream but not yet formed a
     /// returned frame.
-    #[must_use]
     pub fn has_buffered_input(&self) -> bool {
         self.consumed < self.buffer.len()
     }
@@ -625,14 +609,12 @@ impl FrameLimit {
     }
 
     /// Returns the byte limit.
-    #[must_use]
     pub const fn get(self) -> usize {
         self.0
     }
 }
 
 /// Extracts `tools/call` metadata from a JSON-RPC frame.
-#[must_use]
 pub fn parse_tool_call_meta(frame: &FramedMessage, rpc_method: &RpcMethod) -> Option<ToolCallMeta> {
     if !rpc_method.is_tools_call() {
         return None;

@@ -57,7 +57,6 @@ pub struct RenderConfig {
 impl RenderConfig {
     /// Builds a render configuration from user input, applying the default
     /// path style implied by the render mode.
-    #[must_use]
     pub fn from_user_input(
         render: Option<RenderMode>,
         path_style: Option<PathStyle>,
@@ -86,13 +85,11 @@ pub struct TruncatedText {
 }
 
 /// Collapses all internal whitespace runs into single spaces.
-#[must_use]
 pub fn collapse_inline_whitespace(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Truncates a string by Unicode scalar count.
-#[must_use]
 pub fn truncate_chars(raw: &str, limit: Option<usize>) -> TruncatedText {
     let Some(limit) = limit else {
         return TruncatedText {
@@ -116,7 +113,6 @@ pub fn truncate_chars(raw: &str, limit: Option<usize>) -> TruncatedText {
 }
 
 /// Renders a path according to the requested style.
-#[must_use]
 pub fn render_path(path: &Path, style: PathStyle, workspace_root: Option<&Path>) -> String {
     match style {
         PathStyle::Absolute => path.display().to_string(),
@@ -132,7 +128,6 @@ pub fn render_path(path: &Path, style: PathStyle, workspace_root: Option<&Path>)
 }
 
 /// Adds the conventional concise/full control without replacing tool-owned controls.
-#[must_use]
 pub fn with_presentation_properties(schema: Value) -> Value {
     with_control(
         with_render_property(schema),
@@ -142,7 +137,6 @@ pub fn with_presentation_properties(schema: Value) -> Value {
 }
 
 /// Adds only rendering; content controls remain tool-owned.
-#[must_use]
 pub fn with_render_property(schema: Value) -> Value {
     with_control(schema, "render", render_property_schema())
 }
@@ -155,9 +149,9 @@ fn with_control(schema: Value, name: &str, control: Value) -> Value {
         .entry("properties".to_owned())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if let Value::Object(properties) = properties {
-        let _ = properties.entry(name.to_owned()).or_insert(control);
+        properties.entry(name.to_owned()).or_insert(control);
     }
-    let _ = object
+    object
         .entry("additionalProperties".to_owned())
         .or_insert(Value::Bool(false));
     Value::Object(object)
@@ -185,7 +179,6 @@ fn detail_property_schema() -> Value {
 ///
 /// Short homogeneous records use tables; other collections use indentation.
 /// Ambiguous scalars are quoted, and multiline text uses literal blocks.
-#[must_use]
 pub fn render_json_porcelain(value: &Value) -> String {
     let mut lines = Vec::new();
     render_value(value, 0, "", &mut lines);

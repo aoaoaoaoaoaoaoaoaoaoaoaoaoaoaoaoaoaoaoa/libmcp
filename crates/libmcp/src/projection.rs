@@ -53,7 +53,6 @@ pub struct ProjectionPolicy {
 
 impl ProjectionPolicy {
     /// Builds a policy from the type-level doctrine.
-    #[must_use]
     pub fn from_surface(kind: SurfaceKind, forbid_opaque_ids: bool, reference_only: bool) -> Self {
         Self {
             kind,
@@ -87,7 +86,6 @@ impl TimestampText {
     }
 
     /// Returns the rendered timestamp string.
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -128,7 +126,6 @@ pub trait SelectorProjection {
 /// Materialized doctrine for one model-facing surface.
 pub trait SurfacePolicy {
     /// Materializes the policy.
-    #[must_use]
     fn projection_policy(&self) -> ProjectionPolicy;
 }
 

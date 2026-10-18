@@ -24,7 +24,6 @@ pub enum EffectRecovery {
 
 impl EffectRecovery {
     /// Projects the richer contract onto the continuity kernel's retry law.
-    #[must_use]
     pub const fn replay_contract(self) -> ReplayContract {
         match self {
             Self::ReplaySafe | Self::Deduplicated => ReplayContract::Convergent,
@@ -64,7 +63,6 @@ pub struct ToolEffectContract {
 
 impl ToolEffectContract {
     /// Constructs an explicit tool contract.
-    #[must_use]
     pub const fn new(recovery: EffectRecovery, state: SessionStateContract) -> Self {
         Self {
             recovery,
@@ -74,19 +72,16 @@ impl ToolEffectContract {
     }
 
     /// Returns the crash-recovery law.
-    #[must_use]
     pub const fn recovery(&self) -> EffectRecovery {
         self.recovery
     }
 
     /// Returns the rollover state law.
-    #[must_use]
     pub const fn state(&self) -> &SessionStateContract {
         &self.state
     }
 
     /// Returns the JSON Pointer naming a durable operation key.
-    #[must_use]
     pub fn deduplication_key_pointer(&self) -> Option<&str> {
         self.deduplication_key_pointer.as_deref()
     }
@@ -135,13 +130,11 @@ impl ToolCatalog {
     }
 
     /// Returns the public catalog projection.
-    #[must_use]
     pub fn public_tools(&self) -> &[Value] {
         &self.public_tools
     }
 
     /// Returns the contract for one named tool.
-    #[must_use]
     pub fn contract(&self, name: &ToolName) -> Option<&ToolEffectContract> {
         self.contracts.get(name)
     }

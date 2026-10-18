@@ -92,43 +92,36 @@ pub struct TelemetryTotals {
 
 impl TelemetryTotals {
     /// Returns total admitted public requests.
-    #[must_use]
     pub const fn request_count(&self) -> u64 {
         self.request_count
     }
 
     /// Returns terminal public successes.
-    #[must_use]
     pub const fn success_count(&self) -> u64 {
         self.success_count
     }
 
     /// Returns all terminal public errors.
-    #[must_use]
     pub const fn error_count(&self) -> u64 {
         self.error_count
     }
 
     /// Returns terminal downstream response errors.
-    #[must_use]
     pub const fn response_error_count(&self) -> u64 {
         self.response_error_count
     }
 
     /// Returns terminal public errors caused by host recovery.
-    #[must_use]
     pub const fn recovery_error_count(&self) -> u64 {
         self.recovery_error_count
     }
 
     /// Returns recovery-triggering operational fault incidents.
-    #[must_use]
     pub const fn recovery_fault_count(&self) -> u64 {
         self.recovery_fault_count
     }
 
     /// Returns actual redispatches.
-    #[must_use]
     pub const fn retry_count(&self) -> u64 {
         self.retry_count
     }
@@ -167,73 +160,61 @@ pub struct MethodTelemetry {
 
 impl MethodTelemetry {
     /// Returns the canonical method identity.
-    #[must_use]
     pub const fn method(&self) -> &RpcMethod {
         &self.method
     }
 
     /// Returns admitted public requests for this method.
-    #[must_use]
     pub const fn request_count(&self) -> u64 {
         self.request_count
     }
 
     /// Returns terminal public successes for this method.
-    #[must_use]
     pub const fn success_count(&self) -> u64 {
         self.success_count
     }
 
     /// Returns all terminal public errors for this method.
-    #[must_use]
     pub const fn error_count(&self) -> u64 {
         self.error_count
     }
 
     /// Returns terminal downstream response errors for this method.
-    #[must_use]
     pub const fn response_error_count(&self) -> u64 {
         self.response_error_count
     }
 
     /// Returns terminal host-recovery errors for this method.
-    #[must_use]
     pub const fn recovery_error_count(&self) -> u64 {
         self.recovery_error_count
     }
 
     /// Returns recovery-triggering fault incidents for this method.
-    #[must_use]
     pub const fn recovery_fault_count(&self) -> u64 {
         self.recovery_fault_count
     }
 
     /// Returns actual redispatches for this method.
-    #[must_use]
     pub const fn retry_count(&self) -> u64 {
         self.retry_count
     }
 
     /// Returns the most recent measured terminal latency.
-    #[must_use]
     pub const fn last_latency_ms(&self) -> Option<u64> {
         self.last_latency_ms
     }
 
     /// Returns the maximum measured terminal latency.
-    #[must_use]
     pub const fn max_latency_ms(&self) -> u64 {
         self.max_latency_ms
     }
 
     /// Returns the mean measured terminal latency.
-    #[must_use]
     pub const fn avg_latency_ms(&self) -> u64 {
         self.avg_latency_ms
     }
 
     /// Returns the most recent public or operational error detail.
-    #[must_use]
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
@@ -310,7 +291,6 @@ pub enum OperationalMetricError {
 
 impl OperationalLedger {
     /// Creates empty public-session metrics for the active worker generation.
-    #[must_use]
     pub fn new(generation: Generation) -> Self {
         Self {
             generation,
@@ -472,7 +452,6 @@ impl OperationalLedger {
     }
 
     /// Materializes the shared health view for the current host process.
-    #[must_use]
     pub fn health_snapshot(
         &self,
         uptime_ms: u64,
@@ -493,7 +472,6 @@ impl OperationalLedger {
     }
 
     /// Materializes deterministic per-method session telemetry.
-    #[must_use]
     pub fn telemetry_snapshot(
         &self,
         uptime_ms: u64,

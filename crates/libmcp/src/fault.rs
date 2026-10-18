@@ -72,7 +72,6 @@ impl FaultCode {
     }
 
     /// Returns the code text.
-    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -106,7 +105,6 @@ pub struct Fault {
 
 impl Fault {
     /// Constructs a new fault.
-    #[must_use]
     pub fn new(
         generation: Generation,
         class: FaultClass,

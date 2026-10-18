@@ -54,13 +54,11 @@ pub struct SeededInitializeRequest {
 
 impl SeededInitializeRequest {
     /// Returns the original public request identifier.
-    #[must_use]
     pub const fn id(&self) -> &RequestId {
         &self.id
     }
 
     /// Returns the exact original JSON-RPC payload.
-    #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
@@ -78,13 +76,11 @@ pub struct InitializationSeed {
 
 impl InitializationSeed {
     /// Returns the exact public initialize request.
-    #[must_use]
     pub const fn initialize_request(&self) -> &SeededInitializeRequest {
         &self.initialize_request
     }
 
     /// Returns the exact initialized notification when the client sent one.
-    #[must_use]
     pub fn initialized_notification(&self) -> Option<&[u8]> {
         self.initialized_notification.as_deref()
     }
@@ -114,7 +110,6 @@ pub enum HostRejection {
 
 impl HostRejection {
     /// JSON-RPC error code for the rejection.
-    #[must_use]
     pub const fn code(self) -> i64 {
         match self {
             Self::QueueOverflow => -32097,
@@ -129,7 +124,6 @@ impl HostRejection {
     }
 
     /// Human-facing rejection message.
-    #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
             Self::QueueOverflow => "worker queue overflow during recovery",
@@ -168,49 +162,41 @@ pub struct PendingRequest {
 
 impl PendingRequest {
     /// Returns the immutable public JSON-RPC method.
-    #[must_use]
     pub const fn method(&self) -> &RpcMethod {
         &self.method
     }
 
     /// Returns the stable ordering sequence.
-    #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
     }
 
     /// Returns the immutable original request frame.
-    #[must_use]
     pub const fn frame(&self) -> &FramedMessage {
         &self.frame
     }
 
     /// Returns the invocation's replay contract.
-    #[must_use]
     pub const fn replay_contract(&self) -> ReplayContract {
         self.replay_contract
     }
 
     /// Returns the local invocation start time.
-    #[must_use]
     pub const fn started_at(&self) -> StdInstant {
         self.started_at
     }
 
     /// Returns best-effort tool metadata for telemetry grouping.
-    #[must_use]
     pub const fn tool_call_meta(&self) -> Option<&ToolCallMeta> {
         self.tool_call_meta.as_ref()
     }
 
     /// Returns what the kernel knows about execution.
-    #[must_use]
     pub const fn execution_knowledge(&self) -> ExecutionKnowledge {
         self.execution_knowledge
     }
 
     /// Returns replay attempts actually dispatched.
-    #[must_use]
     pub const fn replay_attempts(&self) -> u8 {
         self.replay_attempts
     }
@@ -225,13 +211,11 @@ pub struct CompletedPendingRequest {
 
 impl CompletedPendingRequest {
     /// Returns the completed invocation metadata.
-    #[must_use]
     pub const fn request(&self) -> &PendingRequest {
         &self.request
     }
 
     /// Consumes the completion and returns its invocation metadata.
-    #[must_use]
     pub fn into_request(self) -> PendingRequest {
         self.request
     }
@@ -399,7 +383,6 @@ struct RestoredHostSessionKernel {
 
 impl RestoredHostSessionKernel {
     /// Returns an empty cold host-session state.
-    #[must_use]
     pub fn cold() -> Self {
         Self {
             session_phase: SessionPhase::Cold,
@@ -423,13 +406,11 @@ pub struct HostSessionKernel {
 
 impl HostSessionKernel {
     /// Constructs a cold kernel.
-    #[must_use]
     pub fn cold() -> Self {
         Self::from_restored(RestoredHostSessionKernel::cold())
     }
 
     /// Hydrates the kernel from restored state.
-    #[must_use]
     fn from_restored(restored: RestoredHostSessionKernel) -> Self {
         Self {
             session_phase: restored.session_phase,
@@ -441,7 +422,6 @@ impl HostSessionKernel {
     }
 
     /// Serializes the current kernel state for self-reexec.
-    #[must_use]
     pub fn snapshot(&self) -> HostSessionKernelSnapshot {
         let initialization_seed = self.initialization_seed.clone();
         let mut pending = self
@@ -476,13 +456,11 @@ impl HostSessionKernel {
     }
 
     /// Returns the current public session phase.
-    #[must_use]
     pub const fn session_phase(&self) -> SessionPhase {
         self.session_phase
     }
 
     /// Returns the captured initialize seed, if any.
-    #[must_use]
     pub fn initialization_seed(&self) -> Option<&InitializationSeed> {
         self.initialization_seed.as_ref()
     }
@@ -592,25 +570,21 @@ impl HostSessionKernel {
     }
 
     /// Returns the number of queued client frames.
-    #[must_use]
     pub fn queued_len(&self) -> usize {
         self.queued_frames.len()
     }
 
     /// Returns whether the queue is empty.
-    #[must_use]
     pub fn queue_is_empty(&self) -> bool {
         self.queued_frames.is_empty()
     }
 
     /// Returns the number of live pending invocations.
-    #[must_use]
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
 
     /// Returns whether no invocation is pending.
-    #[must_use]
     pub fn pending_is_empty(&self) -> bool {
         self.pending.is_empty()
     }
@@ -620,7 +594,6 @@ impl HostSessionKernel {
     /// Recovery-scheduled invocations remain pending for public identity and
     /// ordering, but no longer prevent an empty replacement generation from
     /// becoming active.
-    #[must_use]
     pub fn has_in_flight_dispatches(&self) -> bool {
         self.pending
             .values()
@@ -628,7 +601,6 @@ impl HostSessionKernel {
     }
 
     /// Returns immutable pending invocation state by public request ID.
-    #[must_use]
     pub fn pending_request(&self, request_id: &RequestId) -> Option<&PendingRequest> {
         self.pending.get(request_id)
     }
@@ -1198,7 +1170,6 @@ pub struct SnapshotCapsule {
 
 impl SnapshotCapsule {
     /// Returns the path to publish to the replacement process.
-    #[must_use]
     pub fn path(&self) -> &Path {
         self.path.as_ref()
     }

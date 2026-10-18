@@ -32,7 +32,6 @@ impl TestCell {
     }
 
     /// Returns the live scratch root.
-    #[must_use]
     pub fn path(&self) -> &Path {
         self.0.path()
     }
@@ -43,7 +42,7 @@ impl TestCell {
     }
 
     /// Transfers the scratch tree out of RAII custody.
-    #[must_use]
+    #[must_use = "the persisted scratch tree must be retained or removed by the caller"]
     pub fn persist(self) -> PathBuf {
         self.0.keep()
     }
@@ -72,7 +71,6 @@ pub struct ChurnHarness {
 
 impl ChurnHarness {
     /// Creates a cold fake host.
-    #[must_use]
     pub fn cold() -> Self {
         Self {
             kernel: HostSessionKernel::cold(),
@@ -81,13 +79,11 @@ impl ChurnHarness {
     }
 
     /// Returns the underlying kernel for precise assertions.
-    #[must_use]
     pub const fn kernel(&self) -> &HostSessionKernel {
         &self.kernel
     }
 
     /// Returns every frame that crossed the fake worker dispatch boundary.
-    #[must_use]
     pub fn dispatched(&self) -> &[FramedMessage] {
         &self.dispatched
     }

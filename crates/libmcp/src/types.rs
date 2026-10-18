@@ -14,7 +14,6 @@ pub struct InvariantViolation {
 
 impl InvariantViolation {
     /// Creates a new invariant violation.
-    #[must_use]
     pub const fn new(detail: &'static str) -> Self {
         Self { detail }
     }
@@ -29,13 +28,11 @@ pub struct Generation(NonZeroU64);
 
 impl Generation {
     /// Returns the first generation.
-    #[must_use]
     pub const fn genesis() -> Self {
         Self(NonZeroU64::MIN)
     }
 
     /// Returns the inner integer value.
-    #[must_use]
     pub const fn get(self) -> u64 {
         self.0.get()
     }

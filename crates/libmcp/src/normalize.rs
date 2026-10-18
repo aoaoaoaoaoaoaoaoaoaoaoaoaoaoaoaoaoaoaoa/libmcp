@@ -72,7 +72,6 @@ pub fn checked_u64_to_usize(value: u64) -> Result<usize, NumericParseError> {
 }
 
 /// Builds a lossy ASCII equivalence key for internal heuristic matching.
-#[must_use]
 pub(crate) fn fold_ascii_token(raw: &str) -> String {
     raw.chars()
         .filter(|character| character.is_ascii_alphanumeric())

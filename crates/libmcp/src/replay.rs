@@ -20,7 +20,6 @@ pub enum ExecutionKnowledge {
 
 impl ExecutionKnowledge {
     /// Applies loss of the active worker without inventing execution evidence.
-    #[must_use]
     pub const fn after_worker_loss(self) -> Self {
         match self {
             Self::InFlight => Self::OutcomeUnknown,
@@ -99,7 +98,6 @@ pub struct ReplayAllowance {
 
 impl ReplayAllowance {
     /// Constructs replay accounting from attempts actually dispatched.
-    #[must_use]
     pub const fn new(attempts_used: u8, max_attempts: u8) -> Self {
         Self {
             attempts_used,
@@ -108,19 +106,16 @@ impl ReplayAllowance {
     }
 
     /// Returns attempts actually dispatched so far.
-    #[must_use]
     pub const fn attempts_used(self) -> u8 {
         self.attempts_used
     }
 
     /// Returns the configured attempt ceiling.
-    #[must_use]
     pub const fn max_attempts(self) -> u8 {
         self.max_attempts
     }
 
     /// Returns the next attempt number without consuming it.
-    #[must_use]
     pub const fn next_attempt(self) -> Option<u8> {
         match self.attempts_used.checked_add(1) {
             Some(next) if next <= self.max_attempts => Some(next),
@@ -162,7 +157,6 @@ pub struct ExecutionTransitionError {
 }
 
 /// Computes the request disposition independently of process recovery policy.
-#[must_use]
 pub const fn request_disposition(
     knowledge: ExecutionKnowledge,
     contract: ReplayContract,
