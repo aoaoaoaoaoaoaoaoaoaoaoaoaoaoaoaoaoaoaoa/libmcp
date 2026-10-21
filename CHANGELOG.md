@@ -2,8 +2,18 @@
 
 ## Unreleased
 
-- ratchet the Rust toolchain to 1.98.0
+- encode porcelain completely: `render_json_porcelain` takes only the selected
+  value, and bounds belong to content selection; `with_render_property` adds
+  only the `render` argument, leaving content controls tool-owned
+- preserve frames and duplex progress under concurrent worker I/O
+- size worker mailboxes from request admission
+- drain worker output before observing process termination
 - make worker spawning synchronous; it performs no asynchronous work
+- require Rust 1.98.0
+
+Breaking changes from `2.3.1`: `JsonPorcelainConfig` and
+`SurfacePorcelainBounds` are gone, and `render_json_porcelain` drops its
+configuration argument.
 
 ## 2.3.1
 
