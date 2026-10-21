@@ -14,6 +14,8 @@ concurrency:
 jobs:
   foundry:
     name: Foundry
+    # Only the Foundry's tag-gated publisher uses write authority; every proof
+    # job inside the workflow runs read-only.
     permissions:
-      contents: read
-    uses: aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-foundry/.github/workflows/pipeline.yml@60b1a58738060867d10097825ed0c3ee64a808e4
+      contents: write
+    uses: aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-foundry/.github/workflows/pipeline.yml@fleet
